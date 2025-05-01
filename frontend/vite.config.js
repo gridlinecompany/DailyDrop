@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   // Get the ngrok host from environment variable or replace manually
   // IMPORTANT: Make sure this matches your CURRENT ngrok URL subdomain!
-  const HMR_HOST = env.VITE_HMR_HOST || 'c81a-47-145-133-162.ngrok-free.app'; 
+  const HMR_HOST = env.VITE_HMR_HOST || 'ef36-47-145-133-162.ngrok-free.app'; 
 
   return {
     // Explicitly pre-bundle @shopify/polaris to avoid potential dev server issues

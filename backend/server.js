@@ -41,6 +41,95 @@ app.use(cookieParser());
 // --- Middleware for parsing JSON bodies --- 
 app.use(express.json()); // Apply globally or specifically to POST routes
 
+// --- Middleware for API Route Token Validation ---
+const verifyApiRequest = async (req, res, next) => {
+    const shop = req.query.shop;
+    const authHeader = req.headers.authorization;
+    console.log(`[verifyApiRequest] Checking token for shop: ${shop}`);
+
+    if (!shop) {
+        return res.status(400).send('Bad Request: Shop parameter missing.');
+    }
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('[verifyApiRequest] Missing or invalid Authorization header.');
+        console.log('[verifyApiRequest] Raw Authorization Header Received:', req.headers.authorization);
+        return res.status(401).send('Unauthorized: Missing or invalid token.');
+    }
+
+    const token = authHeader.split(' ')[1];
+    console.log('[verifyApiRequest] Extracted token from header:', token);
+    if (!token) {
+        console.log('[verifyApiRequest] Token could not be extracted or is empty after split.');
+        return res.status(401).send('Unauthorized: Malformed token.');
+    }
+
+    let shopDetailsResponse = null; // Define outside try block
+    try {
+        // Attempt a simple authenticated call to verify the token
+        console.log(`[verifyApiRequest] Verifying token for ${shop} via API call...`);
+        
+        const client = new shopify.clients.Rest({
+            session: { 
+              shop: shop,
+              accessToken: token,
+              isOnline: false, 
+            }
+        });
+
+        shopDetailsResponse = await client.get({ path: 'shop' });
+
+        // --- Log the entire response object immediately (KEEP FOR DEBUGGING) --- 
+        console.log('[verifyApiRequest] Raw shopDetailsResponse structure:', shopDetailsResponse ? Object.keys(shopDetailsResponse) : 'null/undefined');
+        try {
+            console.log('[verifyApiRequest] Raw shopDetailsResponse content:', JSON.stringify(shopDetailsResponse, null, 2));
+        } catch (e) {
+            console.error('[verifyApiRequest] Could not stringify shopDetailsResponse:', e);
+            console.log('[verifyApiRequest] Raw shopDetailsResponse (direct):', shopDetailsResponse);
+        }
+        // --- End Log ---
+
+        // --- ADJUSTED CHECK: Assume success if body exists and no exception was thrown --- 
+        if (shopDetailsResponse && shopDetailsResponse.body && shopDetailsResponse.body.shop) {
+            // The call succeeded and returned the expected shop data
+            console.log(`[verifyApiRequest] Token verified successfully for ${shop} (found shop body).`);
+            req.shop = shop;
+            req.token = token; 
+            next(); // Token is valid, proceed
+        } else {
+            // The call completed but didn't return the expected structure, treat as failure.
+            console.error(`[verifyApiRequest] Token verification API call succeeded but response lacked expected body.shop for ${shop}. Response:`, shopDetailsResponse);
+            return res.status(502).send('Bad Gateway: Could not verify token with Shopify due to unexpected API response structure.');
+        }
+        // --- END ADJUSTED CHECK ---
+
+    } catch (error) {
+        // --- ENHANCED CATCH BLOCK --- 
+        console.error(`[verifyApiRequest] Exception during token verification process for ${shop}.`);
+        console.error('[verifyApiRequest] Error Name:', error.name);
+        console.error('[verifyApiRequest] Error Message:', error.message);
+        if (error.stack) {
+            console.error('[verifyApiRequest] Error Stack:', error.stack);
+        }
+
+        // Check if it looks like a Shopify API response error
+        if (error.response && error.response.status) { 
+             console.error('[verifyApiRequest] Caught error with response status:', error.response.status);
+             return res.status(error.response.status).send(`Unauthorized: Verification failed (${error.message})`);
+        } 
+        // Check for fetch/network related errors explicitly
+        else if (error.name === 'FetchError' || error instanceof TypeError) { 
+             console.error(`[verifyApiRequest] Network or fetch-related error during verification.`);
+             return res.status(503).send(`Service Unavailable: Could not reach Shopify API for verification (${error.message})`);
+        }
+        // Generic fallback if it's not clearly a response or network error
+        else {
+             console.error('[verifyApiRequest] Caught non-response, non-network error.');
+             return res.status(500).send('Internal Server Error during token verification.');
+        }
+        // --- END ENHANCED CATCH BLOCK --- 
+    }
+};
+
 // --- Middleware for API Route Session Validation --- 
 const validateSession = async (req, res, next) => {
     const shop = req.query.shop || req.body.shop; // Get shop from query or body
@@ -218,8 +307,9 @@ app.get(
         console.log('[/auth/callback] Session stored successfully.');
 
         // --- Redirect to App --- 
-        console.log(`[/auth/callback] Redirecting to /?shop=${shop}&token=PRESENT`);
-        res.redirect(`/?shop=${encodeURIComponent(shop)}&token=${encodeURIComponent(tokenData.access_token)}`);
+        const redirectUrl = `/?shop=${encodeURIComponent(shop)}&token=${encodeURIComponent(tokenData.access_token)}`;
+        console.log(`[/auth/callback] Redirecting to ${redirectUrl}`);
+        res.redirect(redirectUrl);
 
     } catch (error) {
         console.error('[/auth/callback] Error during manual token exchange or session storage:', error);
@@ -247,42 +337,189 @@ app.get('/api/products', async (req, res) => { ... });
 */
 // --- END REMOVED MIDDLEWARE ---
 
-// --- Add a simple API endpoint to verify session validity ---
-// This will be called by the frontend using authenticatedFetch
-app.get(
-    '/api/verify-session', 
-    async (req, res) => {
-        console.log('[/api/verify-session] Received request. Checking for existing session in DB...');
-        const shop = req.query.shop; 
+// --- Add a simple API endpoint to verify session validity (uses token validation now) ---
+app.get('/api/verify-session', verifyApiRequest, (req, res) => {
+    // If verifyApiRequest middleware passes, the token is valid.
+    console.log(`[/api/verify-session] Token verified for shop: ${req.shop}`);
+    res.status(200).send('Session/Token is valid');
+});
 
-        if (!shop) {
-             console.log('[/api/verify-session] Missing shop query parameter.');
-             return res.status(400).send('Bad Request: Missing shop query parameter.');
+// --- Endpoint to get collections (uses token validation now) ---
+app.get('/api/collections', verifyApiRequest, async (req, res) => {
+    const shop = req.shop; // Get from middleware
+    const token = req.token; // Get from middleware
+    console.log(`[/api/collections] Request for shop: ${shop}`);
+
+    try {
+        const client = new shopify.clients.Rest({
+            session: { shop: shop, accessToken: token, isOnline: false }
+        });
+
+        // Fetch Smart Collections
+        const smartCollectionsResponse = await client.get({
+            path: 'smart_collections',
+            query: { fields: 'id,handle,title' }
+        });
+        // --- Add Logging ---
+        console.log('[/api/collections] Raw smartCollectionsResponse:', JSON.stringify(smartCollectionsResponse, null, 2));
+        // Fetch Custom Collections
+        const customCollectionsResponse = await client.get({
+            path: 'custom_collections',
+            query: { fields: 'id,handle,title' }
+        });
+        // --- Add Logging ---
+        console.log('[/api/collections] Raw customCollectionsResponse:', JSON.stringify(customCollectionsResponse, null, 2));
+
+        // --- ADJUSTED CHECK: Assume success if body exists and no exception was thrown --- 
+        // Check if *both* responses seem valid by checking for their expected body structure
+        const smartOK = smartCollectionsResponse && smartCollectionsResponse.body && typeof smartCollectionsResponse.body.smart_collections !== 'undefined';
+        const customOK = customCollectionsResponse && customCollectionsResponse.body && typeof customCollectionsResponse.body.custom_collections !== 'undefined';
+
+        if (!smartOK || !customOK) {
+             console.error(`[/api/collections] Failed to fetch collections or response structure invalid for shop ${shop}. Smart Valid: ${smartOK}, Custom Valid: ${customOK}`);
+             // Log the responses again on failure
+             if (!smartOK) console.error('[/api/collections] Invalid smartCollectionsResponse:', JSON.stringify(smartCollectionsResponse));
+             if (!customOK) console.error('[/api/collections] Invalid customCollectionsResponse:', JSON.stringify(customCollectionsResponse));
+             // Use 502 for bad gateway / unexpected response from Shopify
+             return res.status(502).send('Error fetching collections from Shopify (Bad Gateway or invalid response).'); 
+        }
+        // --- END ADJUSTED CHECK ---
+
+        // Extract data (safe due to checks above)
+        const smartCollections = smartCollectionsResponse.body.smart_collections || []; // Use default if key exists but is null/undefined
+        const customCollections = customCollectionsResponse.body.custom_collections || []; // Use default if key exists but is null/undefined
+
+        const allCollections = [
+            ...smartCollections.map(col => ({ label: col.title, value: `gid://shopify/Collection/${col.id}` })), // Use GID format
+            ...customCollections.map(col => ({ label: col.title, value: `gid://shopify/Collection/${col.id}` }))  // Use GID format
+        ];
+
+        console.log(`[/api/collections] Found ${allCollections.length} collections for shop ${shop}`);
+        res.status(200).json(allCollections);
+
+    } catch (error) {
+        // --- ENHANCED CATCH BLOCK --- 
+        console.error(`[/api/collections] Exception during collection fetch process for ${shop}.`);
+        console.error('[/api/collections] Error Name:', error.name);
+        console.error('[/api/collections] Error Message:', error.message);
+        if (error.stack) {
+            console.error('[/api/collections] Error Stack:', error.stack);
         }
 
-        try {
-            // Access the configured session storage adapter
-            const sessionStorage = shopify.config.sessionStorage;
-            
-            // Check if any sessions exist for this shop
-            // Use findSessionsByShop which should return an array of sessions
-            const sessions = await sessionStorage.findSessionsByShop(shop);
+        // Check if it looks like a Shopify API response error from the underlying client library
+        // (Error structure might vary, check based on observed errors)
+        if (error.response && error.response.status) { 
+             console.error('[/api/collections] Caught error with response status:', error.response.status);
+             return res.status(error.response.status).send(`Error fetching collections: ${error.message}`);
+        } 
+        // Check for fetch/network related errors explicitly (less likely here if client handles it, but good practice)
+        else if (error.name === 'FetchError' || error instanceof TypeError) { 
+             console.error(`[/api/collections] Network or fetch-related error during collection fetch.`);
+             return res.status(503).send(`Service Unavailable: Could not reach Shopify API for collections (${error.message})`);
+        }
+        // Generic fallback
+        else {
+             console.error('[/api/collections] Caught non-response, non-network error.');
+             return res.status(500).send('Internal Server Error fetching collections.');
+        }
+        // --- END ENHANCED CATCH BLOCK --- 
+    }
+});
 
-            if (sessions && sessions.length > 0) {
-                 console.log(`[/api/verify-session] Found ${sessions.length} existing session(s) for shop ${shop} in DB.`);
-                 // We only care that *a* session exists, implying successful auth previously
-                 return res.sendStatus(200); // OK
-            } else {
-                 console.log(`[/api/verify-session] No session found for shop ${shop} in DB via findSessionsByShop.`);
-                 return res.sendStatus(401); // Unauthorized
+// --- Endpoint to get products by collection ID --- 
+app.get('/api/products-by-collection', verifyApiRequest, async (req, res) => {
+    // Token and shop are verified and attached by verifyApiRequest middleware
+    const shop = req.shop; 
+    const token = req.token;
+    const collectionIdQuery = req.query.collectionId; // e.g., gid://shopify/Collection/12345
+
+    console.log(`[/api/products-by-collection] Request for shop: ${shop}, collectionIdQuery: ${collectionIdQuery}`);
+
+    if (!collectionIdQuery) {
+        return res.status(400).send('Bad Request: collectionId parameter is missing.');
+    }
+
+    // Extract the numeric ID from the GID format
+    const collectionIdMatch = collectionIdQuery.match(/\d+$/);
+    if (!collectionIdMatch) {
+        console.error(`[/api/products-by-collection] Invalid collectionId format: ${collectionIdQuery}`);
+        return res.status(400).send('Bad Request: Invalid collectionId format.');
+    }
+    const collectionId = collectionIdMatch[0];
+    console.log(`[/api/products-by-collection] Extracted numeric collection ID: ${collectionId}`);
+
+    try {
+        // Create authenticated REST client using verified token
+        const client = new shopify.clients.Rest({
+             session: { 
+               shop: shop,
+               accessToken: token,
+               isOnline: false, 
+             }
+        });
+
+        // Fetch products for the collection using numeric ID
+        const productsResponse = await client.get({
+            path: 'products',
+            query: {
+                collection_id: collectionId,
+                fields: 'id,title,image', // Only fetch needed fields
+                status: 'active' // <-- ADD: Explicitly request only active products
             }
+        });
+
+        // --- Add Logging ---
+        console.log('[\/api\/products-by-collection] Raw productsResponse:', JSON.stringify(productsResponse, null, 2));
+
+        // --- NEW CHECK: Assume success if body exists and no exception was thrown --- 
+        if (productsResponse && productsResponse.body && typeof productsResponse.body.products !== 'undefined') {
+             // Success Case: We have the expected product data
+             const responseBody = productsResponse.body; 
+             const products = responseBody.products || []; // Use default if key exists but is null/undefined
+
+             // Map to the format expected by the frontend
+             const formattedProducts = products.map(product => ({
+                 id: product.id, 
+                 title: product.title,
+                 imageUrl: product.image?.src || null 
+             }));
+
+             console.log(`[\/api\/products-by-collection] Found ${formattedProducts.length} products for collection ${collectionId}`);
+             res.status(200).json(formattedProducts);
+            } else {
+             // Failure Case: Response structure is unexpected
+             console.error(`[\/api\/products-by-collection] API call succeeded but response lacked expected body.products for collection ${collectionId}. Response:`, JSON.stringify(productsResponse));
+             return res.status(502).send('Error fetching products from Shopify (Bad Gateway or invalid response structure).');
+            }
+        // --- END NEW CHECK ---
 
         } catch (error) {
-            console.error(`[/api/verify-session] Error checking session for shop ${shop} using findSessionsByShop:`, error);
-            return res.sendStatus(500); // Internal Server Error on DB error
+        // --- ENHANCED CATCH BLOCK --- 
+        console.error(`[\/api\/products-by-collection] Exception during product fetch for shop ${shop}, collection ${collectionId}.`);
+        console.error('[\/api\/products-by-collection] Error Name:', error.name);
+        console.error('[\/api\/products-by-collection] Error Message:', error.message);
+        if (error.stack) {
+            console.error('[\/api\/products-by-collection] Error Stack:', error.stack);
         }
+
+        // Check if it looks like a Shopify API response error
+        if (error.response && error.response.status) { 
+             console.error('[\/api\/products-by-collection] Caught error with response status:', error.response.status);
+             return res.status(error.response.status).send(`Error fetching products: ${error.message}`);
+        } 
+        // Check for fetch/network related errors
+        else if (error.name === 'FetchError' || error instanceof TypeError) { 
+             console.error(`[\/api\/products-by-collection] Network or fetch-related error.`);
+             return res.status(503).send(`Service Unavailable: Could not reach Shopify API for products (${error.message})`);
+        }
+        // Generic fallback
+        else {
+             console.error('[\/api\/products-by-collection] Caught non-response, non-network error.');
+             return res.status(500).send('Internal Server Error fetching products.');
+        }
+        // --- END ENHANCED CATCH BLOCK --- 
     }
-);
+});
 
 // --- Serve Frontend Static Files --- 
 const FRONTEND_BUILD_PATH = path.join(__dirname, '..', 'frontend', 'dist');
@@ -461,71 +698,6 @@ app.get(
             } else {
                  console.error('[/api/products] Error did not match 401/403 structure or was network error. Sending 500.');
                  return res.status(500).send('Internal Server Error while fetching products.');
-            }
-        }
-    }
-);
-// --- End NEW API endpoint ---
-
-// --- NEW: API endpoint to get collections ---
-app.get(
-    '/api/collections',
-    async (req, res) => {
-        console.log('[/api/collections] Received request.');
-        const shop = req.query.shop;
-
-        if (!shop) {
-            console.log('[/api/collections] Missing shop query parameter.');
-            return res.status(400).send('Bad Request: Missing shop query parameter.');
-        }
-
-        let session = null;
-        try {
-            const sessionStorage = shopify.config.sessionStorage;
-            const sessions = await sessionStorage.findSessionsByShop(shop);
-
-            if (sessions && sessions.length > 0) {
-                session = sessions[0]; 
-                console.log(`[/api/collections] Found session for shop ${shop}.`);
-                // Log the scopes associated with this specific session
-                console.log(`[/api/collections] Scopes in found session: ${session.scope}`); 
-            } else {
-                console.log(`[/api/collections] No session found for shop ${shop}. Cannot fetch collections.`);
-                return res.sendStatus(401); // Unauthorized
-            }
-
-            const client = new shopify.clients.Rest({ session });
-            console.log('[/api/collections] REST Client created. Fetching collections...');
-
-            // Fetch both custom and smart collections (or choose one type if preferred)
-            // We'll fetch a limited number for now, add pagination if needed
-            const [customCollectionsResponse, smartCollectionsResponse] = await Promise.all([
-                client.get({ path: 'custom_collections', query: { limit: 50 } }),
-                client.get({ path: 'smart_collections', query: { limit: 50 } })
-            ]);
-
-            const customCollections = customCollectionsResponse.body?.custom_collections || [];
-            const smartCollections = smartCollectionsResponse.body?.smart_collections || [];
-
-            // Combine and format the results for Polaris Select
-            const allCollections = [...customCollections, ...smartCollections].map(col => ({
-                label: col.title, // Use 'label' key
-                value: col.admin_graphql_api_id || col.id.toString() // Use 'value' key, prefer GID
-            })); 
-            
-            // Sort collections alphabetically by label
-            allCollections.sort((a, b) => a.label.localeCompare(b.label)); // Sort by label
-
-            console.log(`[/api/collections] Successfully fetched ${allCollections.length} collections.`);
-            res.status(200).json(allCollections);
-
-        } catch (error) {
-             console.error(`[/api/collections] Error processing request for shop ${shop}:`, error);
-             // Add similar error handling as other endpoints
-             if (error.response && (error.response.code === 401 || error.response.code === 403)) { 
-                 return res.status(error.response.code).send('Unauthorized/Forbidden to fetch collections.');
-             } else {
-                 return res.status(500).send('Internal Server Error while fetching collections.');
              }
         }
     }
@@ -574,6 +746,124 @@ app.get('/api/drops', validateSession, async (req, res) => {
     }
 });
 
+// GET /api/drops/active - Retrieve the currently active drop for the shop
+app.get('/api/drops/active', validateSession, async (req, res) => {
+    const shop = req.query.shop;
+    console.log(`[/api/drops/active GET] Request received for shop: ${shop}`);
+    try {
+        const { data, error } = await supabase
+            .from('drops')
+            .select('*') // Select all columns for now
+            .eq('shop', shop)
+            .eq('status', 'active')
+            .order('start_time', { ascending: false }) // Get the most recent if multiple somehow exist
+            .limit(1)
+            .maybeSingle(); // Returns the single row or null
+
+        if (error) {
+            console.error('[/api/drops/active GET] Supabase Error:', error);
+            throw error;
+        }
+
+        if (data) {
+            console.log('[/api/drops/active GET] Found active drop:', data);
+            res.status(200).json(data);
+        } else {
+            console.log(`[/api/drops/active GET] No active drop found for shop: ${shop}.`);
+            res.status(200).json(null); // Return null explicitly if no active drop
+        }
+
+    } catch (error) {
+        console.error('[/api/drops/active GET] Server Error:', error);
+        // Use similar error handling as other GET routes
+        const errorMessage = error.message || 'Internal server error retrieving active drop.';
+        const errorCode = error.code;
+        let statusCode = 500;
+        if (errorCode === '42501') { // permission denied
+             statusCode = 403;
+        } else if (error.status) {
+             statusCode = error.status;
+        } 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+
+// --- NEW: GET /api/drops/completed - Retrieve recently completed drops ---
+app.get('/api/drops/completed', validateSession, async (req, res) => {
+    const shop = req.query.shop;
+    // Add a limit parameter, defaulting to 10, max 50 for performance
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    console.log(`[/api/drops/completed GET] Request received for shop: ${shop}, limit: ${limit}`);
+
+    try {
+        const { data, error } = await supabase
+            .from('drops')
+            .select('*') // Select all columns for now
+            .eq('shop', shop)
+            .eq('status', 'completed')
+            .order('end_time', { ascending: false }) // Order by completion time, newest first
+            .limit(limit);
+
+        if (error) {
+            console.error('[/api/drops/completed GET] Supabase Error:', error);
+            throw error;
+        }
+
+        console.log(`[/api/drops/completed GET] Found ${data?.length || 0} completed drops.`);
+        res.status(200).json(data || []); // Return data (an array) or empty array
+
+    } catch (error) {
+        console.error('[/api/drops/completed GET] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error retrieving completed drops.';
+        const errorCode = error.code;
+        let statusCode = 500;
+        if (errorCode === '42501') { // permission denied
+             statusCode = 403;
+        } else if (error.status) {
+             statusCode = error.status;
+        } 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+
+// --- NEW: GET /api/drops/queued - Retrieve upcoming queued drops ---
+app.get('/api/drops/queued', validateSession, async (req, res) => {
+    const shop = req.query.shop;
+    // Optional limit, default reasonable number
+    const limit = Math.min(parseInt(req.query.limit, 10) || 25, 100);
+    console.log(`[/api/drops/queued GET] Request received for shop: ${shop}, limit: ${limit}`);
+
+    try {
+        const { data, error } = await supabase
+            .from('drops')
+            .select('*') // Select all needed columns
+            .eq('shop', shop)
+            .eq('status', 'queued')
+            .order('start_time', { ascending: true }) // Order by start time, soonest first
+            .limit(limit);
+
+        if (error) {
+            console.error('[/api/drops/queued GET] Supabase Error:', error);
+            throw error;
+        }
+
+        console.log(`[/api/drops/queued GET] Found ${data?.length || 0} queued drops.`);
+        res.status(200).json(data || []); // Return data (an array) or empty array
+
+    } catch (error) {
+        console.error('[/api/drops/queued GET] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error retrieving queued drops.';
+        const errorCode = error.code;
+        let statusCode = 500;
+        if (errorCode === '42501') { // permission denied
+             statusCode = 403;
+        } else if (error.status) {
+             statusCode = error.status;
+        } 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+
 // POST /api/drops - Create a new drop
 app.post('/api/drops', validateSession, async (req, res) => {
     // Use field names consistent with Supabase 'drops' table & Project Brief
@@ -582,7 +872,7 @@ app.post('/api/drops', validateSession, async (req, res) => {
         title, 
         thumbnail_url, 
         start_time, 
-        duration_hours, 
+        duration_minutes,
         shop // Passed from frontend modal
     } = req.body;
     
@@ -590,9 +880,9 @@ app.post('/api/drops', validateSession, async (req, res) => {
     console.log(`[/api/drops POST] Received payload:`, req.body);
 
     // Basic validation (adjust based on required fields for Supabase table)
-    if (!product_id || !title || !start_time || !duration_hours || !shop) {
+    if (!product_id || !title || !start_time || typeof duration_minutes === 'undefined' || duration_minutes === null || !shop) {
         console.log('[/api/drops POST] Missing required fields.');
-        return res.status(400).json({ error: 'Missing required fields: product_id, title, start_time, duration_hours, shop.' });
+        return res.status(400).json({ error: 'Missing required fields: product_id, title, start_time, duration_minutes, shop.' });
     }
 
     // Prepare data for Supabase insert
@@ -601,7 +891,7 @@ app.post('/api/drops', validateSession, async (req, res) => {
         title,
         thumbnail_url: thumbnail_url || null, // Allow null thumbnail
         start_time, 
-        duration_hours,
+        duration_minutes,
         shop,
         status: 'queued', // Default status
         // next_collection_id: null, // Handle later if needed
@@ -647,7 +937,450 @@ app.post('/api/drops', validateSession, async (req, res) => {
     }
 });
 
-// --- End Daily Drops API Routes ---
+// --- NEW: POST /api/drops/schedule-all - Bulk schedule drops from a collection ---
+app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
+    const { 
+        shop, 
+        queued_collection_id, // GID format like "gid://shopify/Collection/12345"
+        start_date_string,    // YYYY-MM-DD
+        start_time_string,    // HH:MM
+        duration_minutes      // Integer
+    } = req.body;
+
+    console.log(`[/api/drops/schedule-all POST] Request received for shop: ${shop}`);
+    console.log(`[/api/drops/schedule-all POST] Payload:`, req.body);
+
+    // --- Input Validation ---
+    if (!shop || !queued_collection_id || !start_date_string || !start_time_string || typeof duration_minutes === 'undefined' || duration_minutes === null) {
+        return res.status(400).json({ error: 'Missing required fields: shop, queued_collection_id, start_date_string, start_time_string, duration_minutes.' });
+    }
+    const durationMinsInt = parseInt(duration_minutes, 10);
+    if (isNaN(durationMinsInt) || durationMinsInt <= 0) {
+        return res.status(400).json({ error: 'Invalid duration_minutes. Must be a positive integer.' });
+    }
+    const collectionIdMatch = queued_collection_id.match(/\d+$/);
+    if (!collectionIdMatch) {
+        return res.status(400).json({ error: 'Invalid queued_collection_id format.' });
+    }
+    const numericCollectionId = collectionIdMatch[0];
+
+    let initialStartTime;
+    try {
+        if (!/^\d{1,2}:\d{2}$/.test(start_time_string)) throw new Error('Invalid time format. Use HH:MM.');
+        initialStartTime = new Date(`${start_date_string}T${start_time_string}:00`);
+        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination.');
+    } catch (e) {
+        return res.status(400).json({ error: `Invalid start date/time: ${e.message}` });
+    }
+    // --- End Validation ---
+
+    try {
+        // 1. Get session/token (validateSession middleware ensures session exists)
+        const sessionStorage = shopify.config.sessionStorage;
+        const sessions = await sessionStorage.findSessionsByShop(shop);
+        if (!sessions || sessions.length === 0 || !sessions[0].accessToken) {
+             throw new Error('Could not retrieve valid session token.');
+        }
+        const token = sessions[0].accessToken;
+        const client = new shopify.clients.Rest({ session: { shop, accessToken: token, isOnline: false } });
+
+        // 2. Fetch products from the specified Shopify collection
+        console.log(`[/api/drops/schedule-all POST] Fetching products for collection ID: ${numericCollectionId}`);
+        const productsResponse = await client.get({
+            path: 'products',
+            query: {
+                collection_id: numericCollectionId,
+                fields: 'id,title,image', // Only fetch needed fields
+                status: 'active' // <-- ADD: Explicitly request only active products
+            }
+        });
+
+        if (!productsResponse || !productsResponse.body || typeof productsResponse.body.products === 'undefined') {
+            console.error(`[/api/drops/schedule-all POST] Invalid response fetching products:`, productsResponse);
+            return res.status(502).send('Error fetching products from Shopify (Invalid Response).');
+        }
+        const productsToSchedule = productsResponse.body.products || [];
+        if (productsToSchedule.length === 0) {
+             console.log(`[/api/drops/schedule-all POST] No products found in collection ${numericCollectionId}. Nothing to schedule.`);
+             return res.status(200).json({ message: 'No products found in the selected collection to schedule.', scheduled_count: 0 });
+        }
+        console.log(`[/api/drops/schedule-all POST] Found ${productsToSchedule.length} products to schedule.`);
+
+        // 3. Prepare bulk insert data
+        const dropsToInsert = [];
+        let currentStartTime = initialStartTime;
+
+        for (const product of productsToSchedule) {
+            const dropData = {
+                product_id: `gid://shopify/Product/${product.id}`, 
+                title: product.title,
+                thumbnail_url: product.image?.src || null,
+                start_time: currentStartTime.toISOString(), // Use calculated start time
+                duration_minutes: durationMinsInt,
+                shop: shop,
+                status: 'queued'
+                // end_time is calculated by the trigger
+            };
+            dropsToInsert.push(dropData);
+
+            // Calculate start time for the *next* drop
+            currentStartTime = new Date(currentStartTime.getTime() + durationMinsInt * 60000); // Add duration in milliseconds
+        }
+
+        // 4. Perform bulk insert into Supabase
+        console.log(`[/api/drops/schedule-all POST] Attempting to bulk insert ${dropsToInsert.length} drops...`);
+        const { data: insertedData, error: insertError } = await supabase
+            .from('drops')
+            .insert(dropsToInsert) 
+            .select(); // Select the inserted rows
+
+        if (insertError) {
+            console.error('[/api/drops/schedule-all POST] Supabase Insert Error:', insertError);
+            throw insertError; // Let the main catch block handle it
+        }
+
+        console.log(`[/api/drops/schedule-all POST] Successfully bulk inserted ${insertedData?.length || 0} drops.`);
+        res.status(201).json({ 
+            message: `Successfully scheduled ${insertedData?.length || 0} drops.`, 
+            scheduled_count: insertedData?.length || 0, 
+            // data: insertedData // Optionally return the created drops
+        });
+
+    } catch (error) {
+        console.error('[/api/drops/schedule-all POST] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error scheduling drops.';
+        let statusCode = 500;
+        if (error.response && error.response.status) { // Shopify API errors
+             statusCode = error.response.status;
+        } else if (error.code) { // Supabase errors
+             if (error.code === '23505') statusCode = 409; // unique constraint violation
+             else if (error.code === '42501') statusCode = 403; // permission denied
+        }
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+
+// --- NEW: POST /api/drops/append - Add only new products to the end of the queue ---
+app.post('/api/drops/append', validateSession, async (req, res) => {
+    const { 
+        shop, 
+        queued_collection_id // GID format
+    } = req.body;
+
+    console.log(`[/api/drops/append POST] Request received for shop: ${shop}`);
+    console.log(`[/api/drops/append POST] Payload:`, req.body);
+
+    // --- Input Validation ---
+    if (!shop || !queued_collection_id) {
+        return res.status(400).json({ error: 'Missing required fields: shop, queued_collection_id.' });
+    }
+    const collectionIdMatch = queued_collection_id.match(/\d+$/);
+    if (!collectionIdMatch) {
+        return res.status(400).json({ error: 'Invalid queued_collection_id format.' });
+    }
+    const numericCollectionId = collectionIdMatch[0];
+    // --- End Validation ---
+
+    try {
+        // 1. Get session/token
+        const sessionStorage = shopify.config.sessionStorage;
+        const sessions = await sessionStorage.findSessionsByShop(shop);
+        if (!sessions || sessions.length === 0 || !sessions[0].accessToken) {
+             throw new Error('Could not retrieve valid session token.');
+        }
+        const token = sessions[0].accessToken;
+        const shopifyClient = new shopify.clients.Rest({ session: { shop, accessToken: token, isOnline: false } });
+
+        // --- NEW: Fetch default duration from settings --- 
+        console.log(`[/api/drops/append POST] Fetching settings for shop: ${shop}`);
+        const { data: settingsData, error: settingsError } = await supabase
+            .from('app_settings')
+            .select('default_drop_duration_minutes')
+            .eq('shop', shop)
+            .maybeSingle();
+        
+        if (settingsError) {
+            console.error('[/api/drops/append POST] Error fetching settings:', settingsError);
+            throw new Error('Could not fetch app settings to determine duration.');
+        }
+
+        const durationMinsInt = settingsData?.default_drop_duration_minutes || 60; // Use saved duration or default to 60
+        console.log(`[/api/drops/append POST] Using duration from settings: ${durationMinsInt} minutes.`);
+        // --- END Fetch settings --- 
+
+        // 2. Fetch products from Shopify collection
+        console.log(`[/api/drops/append POST] Fetching products for collection ID: ${numericCollectionId}`);
+        const productsResponse = await shopifyClient.get({
+            path: 'products',
+            query: { collection_id: numericCollectionId, fields: 'id,title,image', status: 'active' }
+        });
+        if (!productsResponse?.body?.products) {
+            console.error(`[/api/drops/append POST] Invalid response fetching products:`, productsResponse);
+            return res.status(502).send('Error fetching products from Shopify (Invalid Response).');
+        }
+        const shopifyProducts = productsResponse.body.products || [];
+        const shopifyProductIds = new Set(shopifyProducts.map(p => `gid://shopify/Product/${p.id}`));
+        console.log(`[/api/drops/append POST] Found ${shopifyProducts.length} products in Shopify collection.`);
+
+        // 3. Fetch existing *queued* drops from DB
+        console.log(`[/api/drops/append POST] Fetching existing queued drops from DB...`);
+        const { data: existingQueuedDrops, error: fetchError } = await supabase
+            .from('drops')
+            .select('id, product_id, start_time, end_time') // Select necessary fields
+            .eq('shop', shop)
+            .eq('status', 'queued')
+            .order('start_time', { ascending: false }); // Get latest first
+
+        if (fetchError) {
+            console.error('[/api/drops/append POST] Supabase fetch Error:', fetchError);
+            throw fetchError;
+        }
+        const existingQueuedProductIds = new Set(existingQueuedDrops.map(d => d.product_id));
+        console.log(`[/api/drops/append POST] Found ${existingQueuedDrops.length} existing queued drops in DB.`);
+
+        // 4. Determine the next start time
+        let nextStartTime;
+        if (existingQueuedDrops.length > 0 && existingQueuedDrops[0].end_time) {
+            // Start after the last scheduled drop's end time
+            nextStartTime = new Date(existingQueuedDrops[0].end_time);
+            console.log(`[/api/drops/append POST] Next start time based on last drop: ${nextStartTime.toISOString()}`);
+        } else {
+            // No existing queued drops, start now (or maybe prompt user? For now, start 'now')
+            nextStartTime = new Date(); 
+            console.log(`[/api/drops/append POST] No existing drops, next start time set to now: ${nextStartTime.toISOString()}`);
+            // ALTERNATIVE: Could fetch settings drop_time and combine with today's date? Requires more logic.
+        }
+
+        // 5. Filter Shopify products to find only those not already queued
+        const productsToAppend = shopifyProducts.filter(p => 
+            !existingQueuedProductIds.has(`gid://shopify/Product/${p.id}`)
+        );
+
+        if (productsToAppend.length === 0) {
+            console.log(`[/api/drops/append POST] No new products found in collection to append.`);
+            return res.status(200).json({ message: 'All products in the collection are already scheduled.', scheduled_count: 0 });
+        }
+        console.log(`[/api/drops/append POST] Found ${productsToAppend.length} new products to append.`);
+
+        // 6. Prepare bulk insert data for only the new products
+        const dropsToInsert = [];
+        let currentStartTime = nextStartTime; // Start from the determined time
+
+        for (const product of productsToAppend) {
+            const dropData = {
+                product_id: `gid://shopify/Product/${product.id}`, 
+                title: product.title,
+                thumbnail_url: product.image?.src || null,
+                start_time: currentStartTime.toISOString(),
+                duration_minutes: durationMinsInt, // <-- Use duration fetched from settings
+                shop: shop,
+                status: 'queued'
+            };
+            dropsToInsert.push(dropData);
+            // Calculate start time for the next appended drop
+            currentStartTime = new Date(currentStartTime.getTime() + durationMinsInt * 60000); 
+        }
+
+        // 7. Perform bulk insert for new drops
+        console.log(`[/api/drops/append POST] Attempting to bulk insert ${dropsToInsert.length} new drops...`);
+        const { data: insertedData, error: insertError } = await supabase
+            .from('drops')
+            .insert(dropsToInsert) 
+            .select(); 
+
+        if (insertError) {
+            console.error('[/api/drops/append POST] Supabase Insert Error:', insertError);
+            throw insertError;
+        }
+
+        console.log(`[/api/drops/append POST] Successfully appended ${insertedData?.length || 0} drops.`);
+        res.status(201).json({ 
+            message: `Successfully appended ${insertedData?.length || 0} new drops.`, 
+            scheduled_count: insertedData?.length || 0,
+        });
+
+    } catch (error) {
+        console.error('[/api/drops/append POST] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error appending drops.';
+        let statusCode = 500;
+        // Add similar detailed error status handling as schedule-all
+        if (error.response && error.response.status) { 
+             statusCode = error.response.status;
+        } else if (error.code) { 
+             if (error.code === '23505') statusCode = 409; 
+             else if (error.code === '42501') statusCode = 403; 
+        }
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+
+// --- NEW: API endpoint to GET settings ---
+app.get('/api/settings', validateSession, async (req, res) => {
+    const shop = req.query.shop;
+    console.log(`[/api/settings GET] Request received for shop: ${shop}`);
+
+    try {
+        const { data, error } = await supabase
+            .from('app_settings')
+            .select('queued_collection_id, active_collection_id, completed_collection_id, drop_time, default_drop_duration_minutes, default_drop_date') // <-- ADD default_drop_date
+            .eq('shop', shop)
+            .maybeSingle(); // Returns single row or null, doesn't error if not found
+
+        if (error) {
+            console.error('[/api/settings GET] Supabase Error:', error);
+            throw error;
+        }
+
+        if (data) {
+            console.log('[/api/settings GET] Found settings:', data);
+            res.status(200).json(data);
+        } else {
+            console.log(`[/api/settings GET] No settings found for shop: ${shop}. Returning defaults.`);
+            // Return a default structure or empty object if no settings are found
+            res.status(200).json({
+                queued_collection_id: null,
+                active_collection_id: null,
+                completed_collection_id: null,
+                drop_time: '10:00', // Or whatever your default time is
+                default_drop_duration_minutes: 60, // <-- ADD default duration
+                default_drop_date: null // <-- ADD default date
+            }); 
+            // Alternatively, could send 404: res.status(404).json({ message: 'No settings found for this shop.' });
+        }
+
+    } catch (error) {
+        console.error('[/api/settings GET] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error retrieving settings.';
+        const errorCode = error.code;
+        let statusCode = 500;
+        if (errorCode === '42501') { // permission denied
+             statusCode = 403;
+        } else if (error.status) {
+             statusCode = error.status;
+        } 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+
+// --- NEW: API endpoint to save settings --- 
+app.post('/api/settings', validateSession, async (req, res) => {
+    const shop = req.query.shop; // From validateSession or could be passed in body
+    console.log(`[/api/settings POST] Request received for shop: ${shop}`);
+    
+    // Extract expected settings fields from the request body
+    const {
+        queued_collection_id,
+        active_collection_id,
+        completed_collection_id,
+        drop_time,
+        default_drop_duration_minutes, // <-- ADD duration field
+        default_drop_date // <-- ADD date field
+    } = req.body;
+
+    console.log(`[/api/settings POST] Received payload:`, req.body);
+
+    // Basic validation (optional, depends on frontend guarantees)
+    // if (!queued_collection_id || !active_collection_id || !completed_collection_id || !drop_time) {
+    //     console.log('[/api/settings POST] Missing required settings fields.');
+    //     return res.status(400).json({ error: 'Missing required settings fields.' });
+    // }
+
+    // Prepare data for Supabase upsert
+    // We use the shop domain as the primary key to ensure only one settings row per shop
+    const settingsData = {
+        shop: shop, // Primary key
+        queued_collection_id: queued_collection_id || null,
+        active_collection_id: active_collection_id || null,
+        completed_collection_id: completed_collection_id || null,
+        drop_time: drop_time || null,
+        default_drop_duration_minutes: default_drop_duration_minutes || 60, // <-- ADD duration, default to 60 if not provided
+        default_drop_date: default_drop_date || null, // <-- ADD date, allow null
+        // created_at and updated_at are handled by defaults/triggers in Supabase
+    };
+
+    try {
+        // Use Supabase client's upsert
+        // Upsert will insert if the shop doesn't exist, or update if it does.
+        const { data, error } = await supabase
+            .from('app_settings')
+            .upsert(settingsData, { onConflict: 'shop' }) // Specify the conflict column
+            .select() // Select the upserted row to return it
+            .single(); // Expect only one row
+
+        if (error) {
+            console.error('[/api/settings POST] Supabase Error:', error);
+            throw error; // Let the main catch block handle it
+        }
+
+        console.log('[/api/settings POST] Settings saved/updated successfully in Supabase:', data);
+        res.status(200).json(data); // Return the saved/updated settings object
+
+    } catch (error) {
+        console.error('[/api/settings POST] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error saving settings.';
+        const errorCode = error.code; // Use Supabase error code if available
+        // Check for common Supabase errors like RLS violations (403) or others
+        let statusCode = 500;
+        if (errorCode === '42501') { // permission denied (RLS potentially)
+             statusCode = 403;
+        } else if (error.status) { // Use error status if available
+             statusCode = error.status;
+        } 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+// --- End NEW API endpoint --- 
+
+// --- NEW: DELETE /api/drops - Delete one or more queued drops ---
+app.delete('/api/drops', validateSession, async (req, res) => {
+    const shop = req.query.shop; // From validateSession
+    const { dropIds } = req.body; // Expect an array of UUIDs: { dropIds: ["uuid1", "uuid2"] }
+
+    console.log(`[/api/drops DELETE] Request received for shop: ${shop}`);
+    console.log(`[/api/drops DELETE] Received payload:`, req.body);
+
+    // --- Input Validation ---
+    if (!shop) {
+        // Should not happen due to validateSession, but good practice
+        return res.status(400).json({ error: 'Shop parameter missing.' });
+    }
+    if (!Array.isArray(dropIds) || dropIds.length === 0) {
+        return res.status(400).json({ error: 'Missing or invalid dropIds array in request body.' });
+    }
+    // Optional: Add UUID validation for each ID if needed
+    // --- End Validation ---
+
+    try {
+        // Use Supabase client to delete ONLY queued drops matching the IDs for the shop
+        const { count, error } = await supabase
+            .from('drops')
+            .delete()
+            .in('id', dropIds)       // Match IDs in the provided array
+            .eq('shop', shop)         // Ensure it's for the correct shop
+            .eq('status', 'queued'); // IMPORTANT: Only delete if status is 'queued'
+
+        if (error) {
+            console.error('[/api/drops DELETE] Supabase Error:', error);
+            throw error; // Let the main catch block handle it
+        }
+
+        console.log(`[/api/drops DELETE] Successfully deleted ${count ?? 0} queued drops for shop ${shop}.`);
+        res.status(200).json({ message: `Successfully deleted ${count ?? 0} queued drops.`, deleted_count: count ?? 0 });
+
+    } catch (error) {
+        console.error('[/api/drops DELETE] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error deleting drops.';
+        const errorCode = error.code; // Use Supabase error code if available
+        let statusCode = 500;
+        if (errorCode === '42501') { // permission denied (RLS potentially)
+             statusCode = 403;
+        } else if (error.status) { // Use error status if available
+             statusCode = error.status;
+        } 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+// --- End NEW DELETE endpoint ---
 
 // --- Main App Route (Non-Embedded) --- 
 // Serve the main app without checking session first. Frontend will handle auth check.
@@ -688,7 +1421,7 @@ app.get(
   if (process.env.NODE_ENV === 'development') {
     const vitePort = 5173; 
     const viteServerHttp = `http://localhost:${vitePort}`;
-    const HMR_HOST = process.env.VITE_HMR_HOST || 'c81a-47-145-133-162.ngrok-free.app'; 
+    const HMR_HOST = process.env.VITE_HMR_HOST || 'ef36-47-145-133-162.ngrok-free.app'; 
     const viteServerWssNgrokHostDefaultPort = `wss://${HMR_HOST}`; 
     const viteServerWssNgrokHostDevPort = `wss://${HMR_HOST}:${vitePort}`; 
     const viteServerWsLocalhost = `ws://localhost:${vitePort}`; // Add ws localhost back
@@ -709,7 +1442,7 @@ app.get(
     `style-src 'self' 'unsafe-inline' https://cdn.shopify.com/; ` +
     `img-src 'self' data: https://cdn.shopify.com/; ` +
     `font-src 'self' https://cdn.shopify.com/; ` +
-    `connect-src ${connectSrc}; ` 
+    `connect-src ${connectSrc}; ` // Complete the CSP header
   );
   console.log(`(APP *) Set CSP Header (Dev mode: ${process.env.NODE_ENV === 'development'})`);
 
@@ -777,9 +1510,6 @@ app.get(
   }
   // Ensure we don't fall through if response was sent
   return; 
-
-  // If session invalid, redirect to auth (This part might not be reachable anymore)
-  // ... rest of the middleware ...
 });
 
 // --- Start Server --- 
@@ -793,3 +1523,4 @@ app.listen(PORT, () => {
     console.log(`   ${HOST}/auth?shop=your-development-store.myshopify.com`);
     console.log(`----------------------------------------------------`);
 });
+// --- End of file ---
