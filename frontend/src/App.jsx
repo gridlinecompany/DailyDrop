@@ -22,6 +22,7 @@ import {
   IndexTable,
   useIndexResourceState,
   Badge,
+  Pagination,
 } from '@shopify/polaris';
 import enTranslations from "@shopify/polaris/locales/en.json";
 import '@shopify/polaris/build/esm/styles.css';
@@ -36,8 +37,8 @@ function App() {
   // State for Drop Settings Card
   const [allCollections, setAllCollections] = useState([]);
   const [queuedCollection, setQueuedCollection] = useState('placeholder');
-  const [activeCollection, setActiveCollection] = useState('placeholder');
-  const [completedCollection, setCompletedCollection] = useState('placeholder');
+  // const [activeCollection, setActiveCollection] = useState('placeholder'); // <-- COMMENT OUT
+  // const [completedCollection, setCompletedCollection] = useState('placeholder'); // <-- COMMENT OUT
   const [dropDateString, setDropDateString] = useState('');
   const [dropTime, setDropTime] = useState('10:00');
   const [dropDuration, setDropDuration] = useState('60'); // Keep as string for input field
@@ -63,6 +64,14 @@ function App() {
   const [isAppending, setIsAppending] = useState(false); // <-- NEW: Append loading state
   const [isDeleting, setIsDeleting] = useState(false); // <-- NEW: Delete loading state
 
+  // --- NEW: Pagination State ---
+  const [scheduledPage, setScheduledPage] = useState(1);
+  const [scheduledTotalCount, setScheduledTotalCount] = useState(0);
+  const [completedPage, setCompletedPage] = useState(1);
+  const [completedTotalCount, setCompletedTotalCount] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(5); // Default page size
+  // --- End Pagination State ---
+
   const { smUp } = useBreakpoints(); // <-- Use breakpoints hook
 
   // --- Generate options for Select components from fetched state ---
@@ -84,74 +93,97 @@ function App() {
     setToastActive(true);
   }, []); // showToast itself doesn't have dependencies
 
-  // --- Utility function to fetch scheduled drops --- 
-  const fetchScheduledDrops = useCallback(async () => {
+  // --- Utility function to fetch scheduled drops ---
+  // UPDATED to handle pagination
+  const fetchScheduledDrops = useCallback(async (page = 1, limit = 5) => {
       const shop = getShop();
       if (!shop || !sessionToken || !isAuthenticated) return; // Need token/auth
 
-      console.log('[App.jsx Scheduled] Refetching scheduled drops...');
+      console.log(`[App.jsx Scheduled] Fetching scheduled drops page: ${page}, limit: ${limit}`);
       setIsFetchingScheduledDrops(true);
+      setScheduledPage(page); // Update current page state
+
       try {
-          const response = await fetch(`/api/drops/queued?shop=${encodeURIComponent(shop)}`, {
+          // Pass page and limit to backend
+          const response = await fetch(`/api/drops/queued?shop=${encodeURIComponent(shop)}&page=${page}&limit=${limit}`, {
               headers: { 'Authorization': `Bearer ${sessionToken}` }
           });
-          if (!response.ok) throw new Error(`Scheduled drops refetch failed: ${response.status}`);
-          const data = await response.json();
+          if (!response.ok) throw new Error(`Scheduled drops fetch failed: ${response.status}`);
+          
+          const { data, totalCount } = await response.json(); // Expect { data: [], totalCount: number }
+          console.log(`[App.jsx Scheduled] Received ${data?.length || 0} drops. Total count: ${totalCount}`);
+          
           setScheduledDropsData(data || []);
+          setScheduledTotalCount(totalCount || 0);
+
       } catch (error) {
-          console.error('[App.jsx Scheduled] Error refetching scheduled drops:', error);
-          showToast('Error loading scheduled drops.', true); 
+          console.error('[App.jsx Scheduled] Error fetching scheduled drops:', error);
+          showToast('Error loading scheduled drops.', true);
           setScheduledDropsData([]); // Clear on error
+          setScheduledTotalCount(0);
       } finally {
           setIsFetchingScheduledDrops(false);
       }
-  }, [sessionToken, isAuthenticated, showToast]); // Dependencies for the fetch function
+  }, [sessionToken, isAuthenticated, showToast]); // Dependencies
 
-  // --- NEW: Callback to delete selected queued drops ---
-  const handleDeleteSelectedDrops = useCallback(async (selectedIds) => { // Accepts selected IDs
+  // --- NEW: Utility function to fetch completed drops (paginated) ---
+  const fetchCompletedDrops = useCallback(async (page = 1, limit = 5) => {
       const shop = getShop();
-      if (!shop || !sessionToken || !isAuthenticated) {
-          showToast('Authentication error. Cannot delete drops.', true);
-          return;
-      }
-      if (!selectedIds || selectedIds.length === 0) {
-          showToast('No drops selected to delete.', true);
-          return;
-      }
+      if (!shop || !sessionToken || !isAuthenticated) return; // Need token/auth
 
-      console.log(`[App.jsx Delete] Attempting to delete ${selectedIds.length} drops:`, selectedIds);
-      setIsDeleting(true);
+      console.log(`[App.jsx Completed] Fetching completed drops page: ${page}, limit: ${limit}`);
+      setIsFetchingCompletedDrops(true);
+      setCompletedPage(page); // Update current page state
 
       try {
-          const response = await fetch(`/api/drops?shop=${encodeURIComponent(shop)}`, {
-              method: 'DELETE',
-              headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${sessionToken}`,
-              },
-              body: JSON.stringify({ dropIds: selectedIds }),
+          // Pass page and limit to backend
+          const response = await fetch(`/api/drops/completed?shop=${encodeURIComponent(shop)}&page=${page}&limit=${limit}`, {
+              headers: { 'Authorization': `Bearer ${sessionToken}` }
           });
+          if (!response.ok) throw new Error(`Completed drops fetch failed: ${response.status}`);
 
-          const result = await response.json(); // Try parsing JSON
+          const { data, totalCount } = await response.json(); // Expect { data: [], totalCount: number }
+          console.log(`[App.jsx Completed] Received ${data?.length || 0} drops. Total count: ${totalCount}`);
 
-          if (!response.ok) {
-              throw new Error(result.error || `HTTP error! status: ${response.status}`);
-          }
-
-          console.log('[App.jsx Delete] Drops deleted successfully:', result);
-          showToast(result.message || `${result.deleted_count || 0} queued drops deleted successfully!`);
-
-          // Refetch scheduled drops to update the list AND clear selection
-          fetchScheduledDrops(); 
-          // Selection state is managed by useIndexResourceState, refetching data should reset it if items disappear
+          setCompletedDropsData(data || []);
+          setCompletedTotalCount(totalCount || 0);
 
       } catch (error) {
-          console.error('[App.jsx Delete] Error deleting drops:', error);
-          showToast(`Error deleting drops: ${error.message}`, true);
+          console.error('[App.jsx Completed] Error fetching completed drops:', error);
+          showToast('Error loading completed drops.', true);
+          setCompletedDropsData([]); // Clear on error
+          setCompletedTotalCount(0);
       } finally {
-          setIsDeleting(false);
+          setIsFetchingCompletedDrops(false);
       }
-  }, [sessionToken, isAuthenticated, showToast, fetchScheduledDrops]); // Dependencies
+  }, [sessionToken, isAuthenticated, showToast]); // Dependencies
+
+  // --- NEW: Utility function to fetch the active drop ---
+  const fetchActiveDrop = useCallback(async () => {
+    const shop = getShop();
+    if (!shop || !sessionToken || !isAuthenticated) return; // Need token/auth
+
+    console.log(`[App.jsx Active] Fetching active drop...`);
+    setIsFetchingActiveDrop(true);
+
+    try {
+        const response = await fetch(`/api/drops/active?shop=${encodeURIComponent(shop)}`, {
+            headers: { 'Authorization': `Bearer ${sessionToken}` }
+        });
+        if (!response.ok) throw new Error(`Active drop fetch failed: ${response.status}`);
+        
+        const activeData = await response.json(); // Can be null if none active
+        console.log(`[App.jsx Active] Received active drop data:`, activeData);
+        setActiveDropData(activeData); // Update state
+
+    } catch (error) {
+        console.error('[App.jsx Active] Error fetching active drop:', error);
+        showToast('Error loading active drop.', true);
+        setActiveDropData(null); // Clear on error
+    } finally {
+        setIsFetchingActiveDrop(false);
+    }
+  }, [sessionToken, isAuthenticated, showToast]); // Dependencies
 
   // --- Authentication Effect (Keep as is) ---
   useEffect(() => {
@@ -202,7 +234,7 @@ function App() {
           
           // ---> Fetch ALL initial data AFTER session is verified <--- 
           setIsLoading(true); 
-          Promise.all([
+          Promise.allSettled([ // Use allSettled to avoid one failure stopping others
             // Fetch Collections
             fetch(`/api/collections?shop=${encodeURIComponent(shop)}`, { headers: { 'Authorization': `Bearer ${currentToken}` } }).then(res => {
               if (!res.ok) throw new Error(`Collections fetch failed: ${res.status}`);
@@ -213,61 +245,63 @@ function App() {
               if (!res.ok) throw new Error(`Settings fetch failed: ${res.status}`);
               return res.json();
             }),
-            // Fetch Queued Drops <-- NEW
-            fetch(`/api/drops/queued?shop=${encodeURIComponent(shop)}`, { headers: { 'Authorization': `Bearer ${currentToken}` } }).then(res => {
-              if (!res.ok) throw new Error(`Queued drops fetch failed: ${res.status}`);
-              return res.json(); // Should return an array
-            }),
-            // Fetch Active Drop
-            fetch(`/api/drops/active?shop=${encodeURIComponent(shop)}`, { headers: { 'Authorization': `Bearer ${currentToken}` } }).then(res => {
-              if (!res.ok) throw new Error(`Active drop fetch failed: ${res.status}`);
-              return res.json();
-            }),
-            // Fetch Completed Drops
-            fetch(`/api/drops/completed?shop=${encodeURIComponent(shop)}&limit=10`, { headers: { 'Authorization': `Bearer ${currentToken}` } }).then(res => {
-              if (!res.ok) throw new Error(`Completed drops fetch failed: ${res.status}`);
-              return res.json();
-            })
           ])
-          .then(([collectionsData, settingsData, queuedDrops, activeDrop, completedDrops]) => {
-              console.log('[App.jsx Init] Fetched Collections:', collectionsData);
-              setAllCollections(collectionsData || []);
-              
-              console.log('[App.jsx Init] Fetched Settings:', settingsData);
-              setQueuedCollection(settingsData?.queued_collection_id || 'placeholder');
-              setActiveCollection(settingsData?.active_collection_id || 'placeholder');
-              setCompletedCollection(settingsData?.completed_collection_id || 'placeholder');
-              setDropTime(settingsData?.drop_time || '10:00');
-              setDropDuration(String(settingsData?.default_drop_duration_minutes || '60')); // <-- Set duration from settings
-              setDropDateString(settingsData?.default_drop_date || ''); // <-- Set date from settings
-              
-              console.log('[App.jsx Init] Fetched Queued Drops:', queuedDrops);
-              setScheduledDropsData(queuedDrops || []);
+          .then(async ([collectionsResult, settingsResult]) => { // <-- Make this async
+              // Process Collections
+              if (collectionsResult.status === 'fulfilled') {
+                 console.log('[App.jsx Init] Fetched Collections:', collectionsResult.value);
+                 setAllCollections(collectionsResult.value || []);
+              } else {
+                 console.error('[App.jsx Init] Error fetching Collections:', collectionsResult.reason);
+                 showToast(`Error loading Collections: ${collectionsResult.reason.message}`, true);
+                 setAllCollections([]);
+              }
 
-              console.log('[App.jsx Init] Fetched Active Drop:', activeDrop);
-              setActiveDropData(activeDrop);
+              // Process Settings
+              if (settingsResult.status === 'fulfilled') {
+                 const settingsData = settingsResult.value;
+                 console.log('[App.jsx Init] Fetched Settings:', settingsData);
+                 setQueuedCollection(settingsData?.queued_collection_id || 'placeholder');
+                 // setActiveCollection(settingsData?.active_collection_id || 'placeholder'); // <-- COMMENT OUT
+                 // setCompletedCollection(settingsData?.completed_collection_id || 'placeholder'); // <-- COMMENT OUT
+                 setDropTime(settingsData?.drop_time || '10:00');
+                 setDropDuration(String(settingsData?.default_drop_duration_minutes || '60')); 
+                 setDropDateString(settingsData?.default_drop_date || ''); 
+              } else {
+                 console.error('[App.jsx Init] Error fetching Settings:', settingsResult.reason);
+                 showToast(`Error loading Settings: ${settingsResult.reason.message}`, true);
+                 // Reset relevant states on settings error
+                 setQueuedCollection('placeholder');
+                 // setActiveCollection('placeholder'); // <-- COMMENT OUT
+                 // setCompletedCollection('placeholder'); // <-- COMMENT OUT
+                 setDropTime('10:00');
+                 setDropDuration('60');
+                 setDropDateString('');
+              }
 
-              console.log('[App.jsx Init] Fetched Completed Drops:', completedDrops);
-              setCompletedDropsData(completedDrops || []);
+              // --- Fetch initial drop states AFTER settings are processed ---
+              console.log('[App.jsx Init] Fetching initial drop states...');
+              try {
+                  // Use Promise.allSettled again for the drop fetches
+                  await Promise.allSettled([ // <-- await the drop fetches
+                      fetchScheduledDrops(1, rowsPerPage), 
+                      fetchCompletedDrops(1, rowsPerPage),
+                      fetchActiveDrop() 
+                  ]);
+                  console.log('[App.jsx Init] Initial drop state fetches complete.');
+              } catch (dropFetchError) {
+                  // This catch might not be strictly necessary with allSettled,
+                  // as individual errors are handled within the fetch functions.
+                  // Log just in case something unexpected happens at this level.
+                  console.error('[App.jsx Init] Error during initial drop fetch sequence:', dropFetchError);
+                  showToast('Error loading initial drop data.', true);
+              }
+              // --- End Fetch Initial Drop States ---
 
-          })
-          .catch(error => {
-              console.error('[App.jsx Init] Error fetching initial data (Collections, Settings, Queued, Active, or Completed Drops):', error);
-              showToast(`Error loading initial app data: ${error.message}`, true);
-              // Reset states on error
-              setAllCollections([]);
-              setQueuedCollection('placeholder');
-              setActiveCollection('placeholder');
-              setCompletedCollection('placeholder');
-              setDropTime('10:00');
-              setDropDuration('60');
-              setDropDateString(''); // <-- Reset date string on error
-              setScheduledDropsData([]);
-              setActiveDropData(null);
-              setCompletedDropsData([]);
           })
           .finally(() => {
               setIsLoading(false);
+              console.log('[App.jsx Init] Initial data fetch sequence complete (Collections, Settings, Drops).'); 
           });
           // ---> End Fetch Initial Data <--- 
 
@@ -288,43 +322,67 @@ function App() {
 
   }, [sessionToken]);
 
+  // --- Effect for Periodic Data Refresh ---
+  useEffect(() => {
+    if (!isAuthenticated || !sessionToken) return; // Only run if authenticated
+
+    console.log('[App.jsx Refresh] Setting up periodic fetch...');
+
+    const intervalId = setInterval(() => {
+      console.log('[App.jsx Refresh] Interval triggered: fetching current pages...');
+      // Fetch current pages for scheduled and completed drops
+      fetchScheduledDrops(scheduledPage, rowsPerPage);
+      fetchCompletedDrops(completedPage, rowsPerPage);
+      fetchActiveDrop(); // <-- Add call to fetch active drop
+    }, 30000); // Refresh every 30 seconds
+
+    // Cleanup function to clear the interval when the component unmounts
+    return () => {
+      console.log('[App.jsx Refresh] Clearing interval.');
+      clearInterval(intervalId);
+    };
+  }, [isAuthenticated, sessionToken, fetchScheduledDrops, fetchCompletedDrops, fetchActiveDrop, scheduledPage, completedPage, rowsPerPage]); 
+
   // --- Effect to fetch Queued Products when collection changes ---
   useEffect(() => {
     const shop = getShop();
-    // Ensure we have a valid collection selected (not placeholder) and a token
-    if (queuedCollection && queuedCollection !== 'placeholder' && sessionToken && shop && isAuthenticated) {
+    // Define the actual fetch function (simplified, no pagination)
+    const fetchQueuedProducts = async (limit = 50) => { // Fetch up to limit (e.g., 50)
+      if (!queuedCollection || queuedCollection === 'placeholder' || !sessionToken || !shop || !isAuthenticated) {
+        setQueuedProductsData([]); // Clear data if not ready to fetch
+        return;
+      }
+
       console.log(`[App.jsx Queued] Fetching products for collection ID: ${queuedCollection}`);
       setIsFetchingQueuedProducts(true);
-      setQueuedProductsData([]); // Clear previous data
 
-      fetch(`/api/products-by-collection?shop=${encodeURIComponent(shop)}&collectionId=${queuedCollection}`, {
-        headers: {
-          'Authorization': `Bearer ${sessionToken}`,
-        },
-      })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-          return response.json();
-        })
-        .then(data => {
-          console.log('[App.jsx Queued] Successfully fetched products:', data);
-          setQueuedProductsData(data || []); // Ensure data is an array
-        })
-        .catch(error => {
-          console.error('[App.jsx Queued] Error fetching products:', error);
-          setQueuedProductsData([]); // Clear data on error
-          // TODO: Show error to user (e.g., Banner)
-        })
-        .finally(() => {
-          setIsFetchingQueuedProducts(false);
+      try {
+        const response = await fetch(`/api/products-by-collection?shop=${encodeURIComponent(shop)}&collectionId=${queuedCollection}&limit=${limit}`, {
+          headers: {
+            'Authorization': `Bearer ${sessionToken}`,
+          },
         });
-    } else {
-      // If collection is placeholder or auth fails, clear the data
-      setQueuedProductsData([]);
-    }
-  }, [queuedCollection, sessionToken, isAuthenticated]); // Rerun when collection, token or auth status changes
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json(); // Expect just the array now
+        console.log(`[App.jsx Queued] Successfully fetched products. Count: ${data?.length || 0}.`);
+        setQueuedProductsData(data || []); // Ensure data is an array
+      } catch (error) {
+        console.error('[App.jsx Queued] Error fetching products:', error);
+        setQueuedProductsData([]); // Clear data on error
+        showToast(`Error loading queued products: ${error.message}`, true);
+      } finally {
+        setIsFetchingQueuedProducts(false);
+      }
+    };
+
+    // Call the simplified fetch function when the collection changes
+    fetchQueuedProducts(50); // Fetch up to 50 items
+    // We need fetchQueuedProductsForPage in dependency array if it's defined outside
+    // But defining inside useEffect avoids needing it as dependency if it doesn't use outside props/state directly
+    // OR we wrap it in useCallback and add dependencies
+  }, [queuedCollection, sessionToken, isAuthenticated, showToast]); // Removed rowsPerPage dependency
 
   // --- Callbacks for Drop Settings ---
   const handleSaveSettings = useCallback(async () => {
@@ -339,8 +397,8 @@ function App() {
     
     const settingsPayload = {
         queued_collection_id: queuedCollection === 'placeholder' ? null : queuedCollection,
-        active_collection_id: activeCollection === 'placeholder' ? null : activeCollection,
-        completed_collection_id: completedCollection === 'placeholder' ? null : completedCollection,
+        // active_collection_id: activeCollection === 'placeholder' ? null : activeCollection, // <-- COMMENT OUT
+        // completed_collection_id: completedCollection === 'placeholder' ? null : completedCollection, // <-- COMMENT OUT
         drop_time: dropTime,
         default_drop_duration_minutes: parseInt(dropDuration, 10) || 60, // <-- Send duration to settings
         default_drop_date: dropDateString || null // <-- Send date to settings
@@ -377,8 +435,8 @@ function App() {
     sessionToken, 
     isAuthenticated, 
     queuedCollection, 
-    activeCollection, 
-    completedCollection, 
+    // activeCollection, // <-- COMMENT OUT
+    // completedCollection, // <-- COMMENT OUT
     dropTime,
     dropDuration,
     dropDateString
@@ -440,7 +498,8 @@ function App() {
       showToast(result.message || `${result.scheduled_count || 0} drops scheduled successfully!`);
       
       // Refetch scheduled drops to update the UI
-      fetchScheduledDrops();
+      fetchScheduledDrops(1, rowsPerPage);
+      fetchActiveDrop(); // <-- ADD THIS LINE
       
       // Clear the Queued Products list as they are now scheduled
       setQueuedProductsData([]); 
@@ -462,7 +521,8 @@ function App() {
     dropTime,
     dropDuration,
     showToast, 
-    fetchScheduledDrops
+    fetchScheduledDrops,
+    rowsPerPage // Add rowsPerPage
   ]);
 
   // --- NEW: Callback to append NEW queued drops --- 
@@ -517,7 +577,8 @@ function App() {
       showToast(result.message || `${result.scheduled_count || 0} new drops appended successfully!`);
       
       // Refetch scheduled drops to update the UI
-      fetchScheduledDrops();
+      fetchScheduledDrops(1, rowsPerPage);
+      fetchActiveDrop(); // <-- ADD THIS LINE
       
       // We probably don't need to clear QueuedProductsData here, 
       // as some might still be legitimately queued and not yet scheduled.
@@ -536,8 +597,60 @@ function App() {
     queuedCollection, 
     dropDuration, // Keep dropDuration dependency for validation check
     showToast, 
-    fetchScheduledDrops
+    fetchScheduledDrops,
+    rowsPerPage // Add rowsPerPage
   ]);
+
+  // --- NEW: Function to handle deletion of selected drops ---
+  const handleDeleteSelectedDrops = useCallback(async (dropIdsToDelete) => {
+    const shop = getShop();
+    if (!shop || !sessionToken || !isAuthenticated) {
+      showToast('Authentication error. Cannot delete drops.', true);
+      return;
+    }
+
+    if (!dropIdsToDelete || dropIdsToDelete.length === 0) {
+      showToast('No drops selected to delete.', true);
+      return;
+    }
+
+    setIsDeleting(true);
+    console.log('[App.jsx Delete] Deleting drop IDs:', dropIdsToDelete);
+
+    try {
+      const response = await fetch(`/api/drops?shop=${encodeURIComponent(shop)}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify({ drop_ids: dropIdsToDelete }),
+      });
+
+      const result = await response.json(); // Try to parse JSON regardless of status
+
+      if (!response.ok) {
+        throw new Error(result.error || `HTTP error! status: ${response.status}`);
+      }
+
+      console.log('[App.jsx Delete] Drops deleted successfully:', result);
+      showToast(`${result.deleted_count || 0} queued drop(s) deleted successfully!`);
+
+      // Refetch scheduled drops to update the UI
+      // Go back to page 1 after deletion
+      fetchScheduledDrops(1, rowsPerPage); 
+      // Clear selection
+      // Note: useIndexResourceState doesn't directly expose a clear selection function.
+      // Re-fetching data and letting the hook re-initialize with new data (and thus empty selection) is the standard pattern.
+      
+    } catch (error) {
+      console.error('[App.jsx Delete] Error deleting drops:', error);
+      showToast(`Error deleting drops: ${error.message}`, true);
+    } finally {
+      setIsDeleting(false); // Clear loading state
+    }
+  }, [sessionToken, isAuthenticated, showToast, fetchScheduledDrops, rowsPerPage]);
+  // --- END NEW Function ---
 
   // --- Add selection handling for Scheduled Drops IndexTable ---
   const {
@@ -599,6 +712,27 @@ function App() {
               </IndexTable.Row>
           );
       },
+  );
+
+  // --- Define Row Markup for Queued Products Table ---
+  const queuedProductsRowMarkup = queuedProductsData.map(
+    (product, index) => (
+      <IndexTable.Row
+        id={product.id} // Assuming product has a unique ID from Shopify
+        key={product.id}
+        position={index}
+        // Not selectable for now
+      >
+        <IndexTable.Cell>
+          <Thumbnail
+            source={product.imageUrl || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_medium.png?format=webp&v=1530129081'}
+            alt={product.title}
+            size="small"
+          />
+        </IndexTable.Cell>
+        <IndexTable.Cell>{product.title}</IndexTable.Cell>
+      </IndexTable.Row>
+    )
   );
 
   // --- Render Logic ---
@@ -700,20 +834,20 @@ function App() {
                                   value={queuedCollection}
                                   disabled={allCollections.length === 0}
                               />
-                              <Select
+                              {/* <Select
                                   label="Active Product Collection"
                                   options={collectionOptions}
                                   onChange={setActiveCollection}
                                   value={activeCollection}
                                   disabled={allCollections.length === 0}
-                              />
-                              <Select
+                              /> */}
+                              {/* <Select
                                   label="Completed Products Collection"
                                   options={collectionOptions}
                                   onChange={setCompletedCollection}
                                   value={completedCollection}
                                   disabled={allCollections.length === 0}
-                              />
+                              /> */}
                           </BlockStack>
                       </Card>
                   </InlineGrid>
@@ -814,35 +948,37 @@ function App() {
                 </LegacyCard>
 
                 {/* Queued Products (Available to Schedule) - Remove Action Button */}
-                <LegacyCard title="Queued Products (Available to Schedule)" sectioned>
-                   {isFetchingQueuedProducts ? (
-                      <Spinner accessibilityLabel="Loading queued products..." size="small" />
-                   ) : (
-                     <DataTable
-                      columnContentTypes={[
-                        'text', // Thumbnail
-                        'text', // Title
-                        // Remove placeholder date/time columns
-                      ]}
-                      headings={[
-                        'Product Image',
-                        'Product Title',
-                        // Remove placeholder date/time headings
-                      ]}
-                      rows={queuedProductsData.map(product => ([
-                          <Thumbnail
-                              key={`${product.id}-thumb`}
-                              source={product.imageUrl || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_medium.png?format=webp&v=1530129081'}
-                              alt={product.title}
-                              size="small"
-                          />,
-                          product.title,
-                          // Remove placeholder data cells
-                      ]))}
-                      footerContent={queuedProductsData.length === 0 ? 'No products found in selected collection.' : `Total products: ${queuedProductsData.length}`}
-                    />
-                   )}
+                <LegacyCard title="Queued Products (Available to Schedule)">
+                    {isFetchingQueuedProducts ? (
+                       <LegacyCard.Section>
+                           <Spinner accessibilityLabel="Loading queued products..." size="small" />
+                       </LegacyCard.Section>
+                    ) : (
+                       <IndexTable
+                         resourceName={{
+                           singular: 'available product',
+                           plural: 'available products',
+                         }}
+                         itemCount={queuedProductsData.length}
+                         // No selection needed for this table currently
+                         headings={[
+                           { title: 'Product Image' },
+                           { title: 'Product Title' },
+                         ]}
+                         // No promoted actions needed
+                         emptyState={ // Optional: Better empty state
+                            <Box paddingBlock="2000" paddingInline="2000" style={{ textAlign: 'center' }}>
+                                <Text as="p" tone="subdued">
+                                    {queuedCollection === 'placeholder' ? 'Select a collection above to see available products.' : 'No products found in selected collection.'}
+                                </Text>
+                            </Box>
+                         }
+                       >
+                         {queuedProductsRowMarkup}
+                       </IndexTable>
+                    )}
                 </LegacyCard>
+                {/* --- END MOVED Queued Products --- */}
 
                 {/* --- NEW: Scheduled Drops (using IndexTable) --- */}
                 <LegacyCard title="Scheduled Drops (Upcoming)">
@@ -882,6 +1018,25 @@ function App() {
                             {scheduledDropsRowMarkup}
                         </IndexTable>
                     )}
+                    {/* --- Add Pagination --- */}
+                    {scheduledTotalCount > 0 && (
+                       <Box paddingBlockStart="400" paddingInlineStart="200" paddingInlineEnd="200">
+                           <Pagination
+                               hasPrevious={scheduledPage > 1}
+                               onPrevious={() => {
+                                   const newPage = scheduledPage - 1;
+                                   fetchScheduledDrops(newPage, rowsPerPage);
+                               }}
+                               hasNext={scheduledPage * rowsPerPage < scheduledTotalCount}
+                               onNext={() => {
+                                   const newPage = scheduledPage + 1;
+                                   fetchScheduledDrops(newPage, rowsPerPage);
+                               }}
+                               label={`Page ${scheduledPage} of ${Math.ceil(scheduledTotalCount / rowsPerPage)}`}
+                           />
+                        </Box>
+                    )}
+                    {/* --- End Pagination --- */}
                 </LegacyCard>
                 {/* --- END NEW Scheduled Drops --- */}
 
@@ -930,6 +1085,25 @@ function App() {
                       />
                     )}
                   </LegacyCard.Section>
+                  {/* --- Add Pagination --- */}
+                  {completedTotalCount > 0 && (
+                     <Box paddingBlockStart="400" paddingInlineStart="200" paddingInlineEnd="200">
+                         <Pagination
+                             hasPrevious={completedPage > 1}
+                             onPrevious={() => {
+                                 const newPage = completedPage - 1;
+                                 fetchCompletedDrops(newPage, rowsPerPage);
+                             }}
+                             hasNext={completedPage * rowsPerPage < completedTotalCount}
+                             onNext={() => {
+                                 const newPage = completedPage + 1;
+                                 fetchCompletedDrops(newPage, rowsPerPage);
+                             }}
+                             label={`Page ${completedPage} of ${Math.ceil(completedTotalCount / rowsPerPage)}`}
+                         />
+                      </Box>
+                  )}
+                  {/* --- End Pagination --- */}
                 </LegacyCard>
               </BlockStack>
 
@@ -945,6 +1119,17 @@ function App() {
         </Layout>
     </Page>
   );
+
+  // *** ADD LOGGING HERE ***
+  console.log('[App.jsx Render Check]', {
+    isLoading,
+    isAuthenticated,
+    activeDropData, // Log the current active drop state
+    scheduledDropsDataLength: scheduledDropsData?.length, // Log length of scheduled drops
+    // You could log the full scheduledDropsData array too, but length is often enough for initial check
+    // scheduledDropsData, 
+  });
+  // *** END LOGGING ***
 
   // Main App Render
   return (

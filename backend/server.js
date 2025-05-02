@@ -1,3 +1,5 @@
+import 'dotenv/config'; 
+// --- ALL OTHER IMPORTS GO BELOW THIS LINE ---
 import express from 'express';
 import path from 'path';
 import fs from 'fs/promises'; // Import fs.promises for reading the HTML file
@@ -20,6 +22,12 @@ const __dirname = path.dirname(__filename);
 console.log(`[dotenv] Loaded HOST: ${process.env.HOST}`); 
 // ADDED: Log loaded API Key
 console.log(`[dotenv] Loaded API Key: ${process.env.SHOPIFY_API_KEY ? 'Exists' : 'MISSING!'}`); 
+
+// --- BEGIN ADDED DEBUG LOGS ---
+console.log(`DEBUG: SHOPIFY_API_KEY loaded: ${process.env.SHOPIFY_API_KEY ? 'Yes' : 'NO!'}`);
+console.log(`DEBUG: SHOPIFY_API_SECRET loaded: ${process.env.SHOPIFY_API_SECRET ? 'Yes' : 'NO!'}`);
+console.log(`DEBUG: Scopes: ${process.env.SHOPIFY_API_SCOPES}`);
+// --- END ADDED DEBUG LOGS ---
 
 // Validate essential env vars on startup
 const { PORT, HOST, SHOPIFY_API_KEY } = process.env; // Add SHOPIFY_API_KEY here
@@ -142,6 +150,7 @@ const validateSession = async (req, res, next) => {
         const sessionStorage = shopify.config.sessionStorage;
         const sessions = await sessionStorage.findSessionsByShop(shop);
         if (sessions && sessions.length > 0) {
+            req.shopifySession = sessions[0]; // <-- Add this line to attach session
             console.log(`[validateSession] Session found for shop ${shop}. Proceeding.`);
             // Optionally attach session to request for later use: req.shopifySession = sessions[0];
             next(); // Session exists, continue to the actual route handler
@@ -182,7 +191,10 @@ app.get('/auth', async (req, res) => {
     console.log(`[/auth] Initiating OAuth for shop: ${shop}`);
     try {
         const apiKey = shopify.config.apiKey;
-        const scopesString = process.env.SHOPIFY_SCOPES || ''; 
+        // --- MODIFIED: Get scopes from the configured library instance --- 
+        const scopesString = shopify.config.scopes.toString(); // Get scopes from the library config
+        // const scopesString = process.env.SHOPIFY_SCOPES || ''; // <-- OLD line to remove/comment out
+        // --- END MODIFICATION ---
         const encodedScopes = encodeURIComponent(scopesString);
         const redirectUri = `${HOST}/auth/callback`;
         const encodedRedirectUri = encodeURIComponent(redirectUri);
@@ -201,7 +213,7 @@ app.get('/auth', async (req, res) => {
         // Construct the authorization URL (including state)
         const authUrl = `https://${encodeURIComponent(shop)}/admin/oauth/authorize?client_id=${apiKey}&scope=${encodedScopes}&redirect_uri=${encodedRedirectUri}&state=${state}`;
 
-        console.log(`[/auth] Redirecting to Shopify OAuth URL. Scopes: ${scopesString}. State included.`);
+        console.log(`[/auth] Redirecting to Shopify OAuth URL. Scopes requested: ${scopesString}. State included.`); // Updated log
         res.redirect(authUrl);
 
     } catch (error) {
@@ -282,10 +294,13 @@ app.get(
             return res.status(tokenResponse.status).send(`Failed to get access token: ${JSON.stringify(tokenData)}`);
         }
 
-        console.log('[/auth/callback] Successfully exchanged code for token. Scopes received:', tokenData.scope);
+        // --- ADD LOGGING: What scopes did Shopify return? ---
+        console.log('[/auth/callback] Token exchange successful.');
+        console.log(`[/auth/callback] ====> SCOPES RECEIVED FROM SHOPIFY: ${tokenData.scope}`); 
+        // --- END LOGGING ---
         
         // --- Manually construct a proper Session instance --- 
-        const sessionId = `${shop}_${tokenData.access_token}`; 
+        const sessionId = `${shop}_${tokenData.access_token}`;
         const session = new Session({
             id: sessionId,
             shop: shop,
@@ -294,6 +309,15 @@ app.get(
             accessToken: tokenData.access_token,
             scope: tokenData.scope, 
         });
+        // --- ADD LOGGING: What session are we storing? ---
+        console.log(`[/auth/callback] Session object PREPARED for storage:`, {
+            id: session.id,
+            shop: session.shop,
+            isOnline: session.isOnline,
+            accessTokenPrefix: session.accessToken?.substring(0,5),
+            scope: session.scope // Log the scope we are putting in the session object
+        });
+        // --- END LOGGING ---
         // -----------------------------------------------------
 
         // Manually store the session instance
@@ -301,10 +325,23 @@ app.get(
         const sessionStorage = shopify.config.sessionStorage;
         const stored = await sessionStorage.storeSession(session);
         if (!stored) {
-            console.error('[/auth/callback] Failed to store session manually!');
+            console.error('[/auth/callback] Failed to store session manually! storeSession returned false.');
+            // Optionally, try loading right after storing to see if it failed silently
+            const checkSession = await sessionStorage.loadSession(sessionId);
+            console.log('[/auth/callback] Session check immediately after failed storeSession:', checkSession);
             return res.status(500).send('Failed to save session data.');
         }
-        console.log('[/auth/callback] Session stored successfully.');
+        console.log('[/auth/callback] storeSession call completed successfully (returned true).');
+
+        // --- ADD LOGGING: Load session immediately after storing to verify scope --- 
+        console.log(`[/auth/callback] Attempting to load session ${sessionId} immediately after storing...`);
+        const loadedSession = await sessionStorage.loadSession(sessionId);
+        if (loadedSession) {
+            console.log(`[/auth/callback] ====> Session loaded immediately AFTER storeSession has SCOPE: ${loadedSession.scope}`);
+        } else {
+            console.error(`[/auth/callback] FAILED to load session ${sessionId} immediately after storing!`);
+        }
+        // --- END LOGGING ---
 
         // --- Redirect to App --- 
         const redirectUrl = `/?shop=${encodeURIComponent(shop)}&token=${encodeURIComponent(tokenData.access_token)}`;
@@ -433,7 +470,12 @@ app.get('/api/products-by-collection', verifyApiRequest, async (req, res) => {
     const token = req.token;
     const collectionIdQuery = req.query.collectionId; // e.g., gid://shopify/Collection/12345
 
-    console.log(`[/api/products-by-collection] Request for shop: ${shop}, collectionIdQuery: ${collectionIdQuery}`);
+    // --- Pagination (REVERTED) --- 
+    // const page = parseInt(req.query.page, 10) || 1; // Default to page 1
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 50); // Limit to 50, remove page
+    // --- End Pagination ---
+
+    console.log(`[/api/products-by-collection] Request for shop: ${shop}, collectionIdQuery: ${collectionIdQuery}, limit: ${limit}`); // Updated log
 
     if (!collectionIdQuery) {
         return res.status(400).send('Bad Request: collectionId parameter is missing.');
@@ -458,42 +500,47 @@ app.get('/api/products-by-collection', verifyApiRequest, async (req, res) => {
              }
         });
 
-        // Fetch products for the collection using numeric ID
+        // --- Fetch products for the page using numeric ID and pagination --- 
         const productsResponse = await client.get({
             path: 'products',
             query: {
                 collection_id: collectionId,
                 fields: 'id,title,image', // Only fetch needed fields
-                status: 'active' // <-- ADD: Explicitly request only active products
+                status: 'active',
+                limit: limit, // <-- Keep limit
+                // page: page    // <-- REMOVE page parameter
             }
         });
 
         // --- Add Logging ---
         console.log('[\/api\/products-by-collection] Raw productsResponse:', JSON.stringify(productsResponse, null, 2));
+        // console.log('[\/api\/products-by-collection] Raw countResponse:', JSON.stringify(countResponse, null, 2)); // Removed count
 
         // --- NEW CHECK: Assume success if body exists and no exception was thrown --- 
-        if (productsResponse && productsResponse.body && typeof productsResponse.body.products !== 'undefined') {
-             // Success Case: We have the expected product data
-             const responseBody = productsResponse.body; 
-             const products = responseBody.products || []; // Use default if key exists but is null/undefined
+         // Check product fetch response
+         if (productsResponse && productsResponse.body && typeof productsResponse.body.products !== 'undefined') {
+            const products = productsResponse.body.products || []; 
+            // Cannot easily get total count with REST API without extra calls or Link header parsing
 
-             // Map to the format expected by the frontend
-             const formattedProducts = products.map(product => ({
-                 id: product.id, 
-                 title: product.title,
-                 imageUrl: product.image?.src || null 
-             }));
+            // Map to the format expected by the frontend
+            const formattedProducts = products.map(product => ({
+                id: product.id, 
+                title: product.title,
+                imageUrl: product.image?.src || null 
+            }));
 
-             console.log(`[\/api\/products-by-collection] Found ${formattedProducts.length} products for collection ${collectionId}`);
-             res.status(200).json(formattedProducts);
-            } else {
-             // Failure Case: Response structure is unexpected
+            console.log(`[/api/products-by-collection] Found ${formattedProducts.length} products (limit: ${limit}) for collection ${collectionId}.`);
+            // --- Return just the data array --- 
+            res.status(200).json(formattedProducts); // Return the array directly
+            // --- End Return ---
+          } else {
+              // Product fetch failed
              console.error(`[\/api\/products-by-collection] API call succeeded but response lacked expected body.products for collection ${collectionId}. Response:`, JSON.stringify(productsResponse));
              return res.status(502).send('Error fetching products from Shopify (Bad Gateway or invalid response structure).');
-            }
+          }
         // --- END NEW CHECK ---
 
-        } catch (error) {
+    } catch (error) {
         // --- ENHANCED CATCH BLOCK --- 
         console.error(`[\/api\/products-by-collection] Exception during product fetch for shop ${shop}, collection ${collectionId}.`);
         console.error('[\/api\/products-by-collection] Error Name:', error.name);
@@ -791,26 +838,29 @@ app.get('/api/drops/active', validateSession, async (req, res) => {
 // --- NEW: GET /api/drops/completed - Retrieve recently completed drops ---
 app.get('/api/drops/completed', validateSession, async (req, res) => {
     const shop = req.query.shop;
-    // Add a limit parameter, defaulting to 10, max 50 for performance
-    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
-    console.log(`[/api/drops/completed GET] Request received for shop: ${shop}, limit: ${limit}`);
+    // --- Pagination --- 
+    const page = parseInt(req.query.page, 10) || 1; // Default to page 1
+    const limit = Math.min(parseInt(req.query.limit, 10) || 5, 50); // Default to 5, max 50
+    const offset = (page - 1) * limit;
+    console.log(`[/api/drops/completed GET] Request for shop: ${shop}, page: ${page}, limit: ${limit}`);
+    // --- End Pagination ---
 
     try {
-        const { data, error } = await supabase
+        const { data, error, count } = await supabase
             .from('drops')
-            .select('*') // Select all columns for now
+            .select('*', { count: 'exact' }) // <-- Request total count
             .eq('shop', shop)
             .eq('status', 'completed')
             .order('end_time', { ascending: false }) // Order by completion time, newest first
-            .limit(limit);
+            .range(offset, offset + limit - 1); // <-- Use range for pagination
 
         if (error) {
             console.error('[/api/drops/completed GET] Supabase Error:', error);
             throw error;
         }
 
-        console.log(`[/api/drops/completed GET] Found ${data?.length || 0} completed drops.`);
-        res.status(200).json(data || []); // Return data (an array) or empty array
+        console.log(`[/api/drops/completed GET] Found ${data?.length || 0} drops on page ${page}. Total count: ${count}`);
+        res.status(200).json({ data: data || [], totalCount: count }); // <-- Return data and total count
 
     } catch (error) {
         console.error('[/api/drops/completed GET] Server Error:', error);
@@ -829,26 +879,29 @@ app.get('/api/drops/completed', validateSession, async (req, res) => {
 // --- NEW: GET /api/drops/queued - Retrieve upcoming queued drops ---
 app.get('/api/drops/queued', validateSession, async (req, res) => {
     const shop = req.query.shop;
-    // Optional limit, default reasonable number
-    const limit = Math.min(parseInt(req.query.limit, 10) || 25, 100);
-    console.log(`[/api/drops/queued GET] Request received for shop: ${shop}, limit: ${limit}`);
+    // --- Pagination --- 
+    const page = parseInt(req.query.page, 10) || 1; // Default to page 1
+    const limit = Math.min(parseInt(req.query.limit, 10) || 5, 100); // Default to 5, max 100
+    const offset = (page - 1) * limit;
+    console.log(`[/api/drops/queued GET] Request for shop: ${shop}, page: ${page}, limit: ${limit}`);
+    // --- End Pagination ---
 
     try {
-        const { data, error } = await supabase
+        const { data, error, count } = await supabase
             .from('drops')
-            .select('*') // Select all needed columns
+            .select('*', { count: 'exact' }) // <-- Request total count
             .eq('shop', shop)
             .eq('status', 'queued')
             .order('start_time', { ascending: true }) // Order by start time, soonest first
-            .limit(limit);
+            .range(offset, offset + limit - 1); // <-- Use range for pagination
 
         if (error) {
             console.error('[/api/drops/queued GET] Supabase Error:', error);
             throw error;
         }
 
-        console.log(`[/api/drops/queued GET] Found ${data?.length || 0} queued drops.`);
-        res.status(200).json(data || []); // Return data (an array) or empty array
+        console.log(`[/api/drops/queued GET] Found ${data?.length || 0} drops on page ${page}. Total count: ${count}`);
+        res.status(200).json({ data: data || [], totalCount: count }); // <-- Return data and total count
 
     } catch (error) {
         console.error('[/api/drops/queued GET] Server Error:', error);
@@ -939,13 +992,19 @@ app.post('/api/drops', validateSession, async (req, res) => {
 
 // --- NEW: POST /api/drops/schedule-all - Bulk schedule drops from a collection ---
 app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
-    const { 
-        shop, 
-        queued_collection_id, // GID format like "gid://shopify/Collection/12345"
-        start_date_string,    // YYYY-MM-DD
-        start_time_string,    // HH:MM
-        duration_minutes      // Integer
-    } = req.body;
+    // --- BEGIN ADDED DEBUG LOGS ---
+    // Assuming 'validateSession' adds the session to req, e.g., req.shopifySession
+    const sessionForLog = req.shopifySession || null; // Get session attached by middleware
+    console.log(`DEBUG /api/drops/schedule-all: Middleware provided session? ${sessionForLog ? 'Yes' : 'No - API calls WILL fail!'}`); // Added emphasis
+    console.log(`DEBUG /api/drops/schedule-all: Session details: shop=${sessionForLog?.shop}, Active=${sessionForLog?.isActive()}, Online=${sessionForLog?.isOnline}`);
+    if (sessionForLog?.accessToken) {
+         console.log(`DEBUG /api/drops/schedule-all: Access Token starts with: ${sessionForLog.accessToken.substring(0, 5)}... Scope: ${sessionForLog.scope}`);
+    } else {
+         console.log(`DEBUG /api/drops/schedule-all: NO Access Token found in session provided by middleware!`);
+    }
+    // --- END ADDED DEBUG LOGS ---
+
+    const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body; // Get body params AFTER logging session
 
     console.log(`[/api/drops/schedule-all POST] Request received for shop: ${shop}`);
     console.log(`[/api/drops/schedule-all POST] Payload:`, req.body);
@@ -1006,11 +1065,39 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
         }
         console.log(`[/api/drops/schedule-all POST] Found ${productsToSchedule.length} products to schedule.`);
 
-        // 3. Prepare bulk insert data
+        // --- NEW: Fetch existing queued/active product IDs --- 
+        console.log(`[/api/drops/schedule-all POST] Fetching existing queued/active product IDs...`);
+        const { data: existingDrops, error: existingDropsError } = await supabase
+            .from('drops')
+            .select('product_id')
+            .eq('shop', shop)
+            .in('status', ['queued', 'active']); // Check against both queued and active
+
+        if (existingDropsError) {
+            console.error('[/api/drops/schedule-all POST] Error fetching existing drops:', existingDropsError);
+            throw new Error('Could not verify existing scheduled drops.');
+        }
+        const existingProductIds = new Set(existingDrops.map(d => d.product_id));
+        console.log(`[/api/drops/schedule-all POST] Found ${existingProductIds.size} existing product IDs.`);
+        // --- END Fetch existing --- 
+
+        // 3. Prepare bulk insert data (Filter out existing products)
         const dropsToInsert = [];
         let currentStartTime = initialStartTime;
 
-        for (const product of productsToSchedule) {
+        // --- Filter productsToSchedule --- 
+        const newProductsToSchedule = productsToSchedule.filter(product => 
+            !existingProductIds.has(`gid://shopify/Product/${product.id}`)
+        );
+        console.log(`[/api/drops/schedule-all POST] Filtered down to ${newProductsToSchedule.length} new products to schedule.`);
+        // --- End Filter ---
+
+        if (newProductsToSchedule.length === 0) {
+            console.log(`[/api/drops/schedule-all POST] No new products to schedule after filtering.`);
+             return res.status(200).json({ message: 'All products in the collection are already scheduled or active.', scheduled_count: 0 });
+        }
+
+        for (const product of newProductsToSchedule) { // <-- Iterate over filtered list
             const dropData = {
                 product_id: `gid://shopify/Product/${product.id}`, 
                 title: product.title,
@@ -1222,7 +1309,8 @@ app.get('/api/settings', validateSession, async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('app_settings')
-            .select('queued_collection_id, active_collection_id, completed_collection_id, drop_time, default_drop_duration_minutes, default_drop_date') // <-- ADD default_drop_date
+            // .select('queued_collection_id, active_collection_id, completed_collection_id, drop_time, default_drop_duration_minutes, default_drop_date') // <-- Commented out active/completed
+            .select('queued_collection_id, drop_time, default_drop_duration_minutes, default_drop_date') // <-- Select only used fields
             .eq('shop', shop)
             .maybeSingle(); // Returns single row or null, doesn't error if not found
 
@@ -1239,11 +1327,11 @@ app.get('/api/settings', validateSession, async (req, res) => {
             // Return a default structure or empty object if no settings are found
             res.status(200).json({
                 queued_collection_id: null,
-                active_collection_id: null,
-                completed_collection_id: null,
+                // active_collection_id: null, // <-- COMMENT OUT
+                // completed_collection_id: null, // <-- COMMENT OUT
                 drop_time: '10:00', // Or whatever your default time is
-                default_drop_duration_minutes: 60, // <-- ADD default duration
-                default_drop_date: null // <-- ADD default date
+                default_drop_duration_minutes: 60, // <-- ADD duration
+                default_drop_date: null // <-- ADD date
             }); 
             // Alternatively, could send 404: res.status(404).json({ message: 'No settings found for this shop.' });
         }
@@ -1270,8 +1358,8 @@ app.post('/api/settings', validateSession, async (req, res) => {
     // Extract expected settings fields from the request body
     const {
         queued_collection_id,
-        active_collection_id,
-        completed_collection_id,
+        // active_collection_id, // <-- COMMENT OUT
+        // completed_collection_id, // <-- COMMENT OUT
         drop_time,
         default_drop_duration_minutes, // <-- ADD duration field
         default_drop_date // <-- ADD date field
@@ -1290,8 +1378,8 @@ app.post('/api/settings', validateSession, async (req, res) => {
     const settingsData = {
         shop: shop, // Primary key
         queued_collection_id: queued_collection_id || null,
-        active_collection_id: active_collection_id || null,
-        completed_collection_id: completed_collection_id || null,
+        // active_collection_id: active_collection_id || null, // <-- COMMENT OUT
+        // completed_collection_id: completed_collection_id || null, // <-- COMMENT OUT
         drop_time: drop_time || null,
         default_drop_duration_minutes: default_drop_duration_minutes || 60, // <-- ADD duration, default to 60 if not provided
         default_drop_date: default_drop_date || null, // <-- ADD date, allow null
@@ -1381,6 +1469,248 @@ app.delete('/api/drops', validateSession, async (req, res) => {
     }
 });
 // --- End NEW DELETE endpoint ---
+
+// --- Metafield Update Logic ---
+const TARGET_SHOP_DOMAIN = 'dailydropmanager.myshopify.com'; // <-- HARDCODED: Replace if shop changes!
+// Global variable to track the last handle set in the metafield
+let lastActiveProductHandleSet = null;
+// Global variable to store Shop ID and Metafield ID (as GIDs)
+let shopGid = null; // e.g., "gid://shopify/Shop/12345"
+let shopMetafieldGid = null; // e.g., "gid://shopify/Metafield/67890"
+
+// Function to get Shop GID and the specific Metafield GID
+async function initializeMetafieldUpdater() {
+    console.log('[Metafield Updater] Initializing...');
+    
+    // Explicitly define shopDomain from the constant
+    const shopDomain = TARGET_SHOP_DOMAIN; 
+
+    if (!shopDomain) {
+        console.error('[Metafield Updater] Target shop domain is not defined (Constant is empty?).');
+        return;
+    }
+    console.log(`[Metafield Updater] Attempting initialization for hardcoded shop: ${shopDomain}`);
+
+    // Now, proceed with the try block
+    try {
+        const sessionStorage = shopify.config.sessionStorage;
+        console.log(`[Metafield Updater] Finding sessions for ${shopDomain}...`); // Add log before find
+        const sessions = await sessionStorage.findSessionsByShop(shopDomain);
+        
+        if (!sessions || sessions.length === 0) {
+            console.error(`[Metafield Updater] No session found for shop ${shopDomain}. Cannot complete initialization.`);
+            return;
+        }
+        const session = sessions[0]; // Use the first found session
+
+        if (!session.accessToken) {
+            console.error(`[Metafield Updater] Found session for ${shopDomain} but it lacks an access token.`);
+            return;
+        }
+        
+        console.log(`[Metafield Updater] Using session with accessToken (prefix: ${session.accessToken.substring(0,5)}...) for shop ${session.shop} to initialize.`);
+        const client = new shopify.clients.Graphql({ session });
+
+        // 1. Get Shop GID
+        console.log('[Metafield Updater] Fetching Shop GID...');
+        const shopQuery = `query { shop { id } }`;
+        const shopResponse = await client.query({ data: shopQuery });
+        shopGid = shopResponse?.body?.data?.shop?.id;
+        if (!shopGid) {
+            console.error('[Metafield Updater] Failed to retrieve Shop GID.', shopResponse?.body?.errors || 'No body/data/shop');
+            return;
+        }
+        console.log(`[Metafield Updater] Got Shop GID: ${shopGid}`);
+
+        // 2. Get Metafield Definition GID (we know namespace/key)
+        console.log('[Metafield Updater] Fetching Metafield Definition GID...');
+        // --- MODIFIED QUERY --- 
+        const metafieldDefQuery = `
+            query {
+                metafieldDefinitions(
+                    first: 1, 
+                    ownerType: SHOP, 
+                    namespace: "custom", 
+                    key: "active_drop_product_handle"
+                ) {
+                    edges {
+                        node {
+                            id
+                        }
+                    }
+                }
+            }
+        `;
+        // --- END MODIFIED QUERY ---
+        const metafieldDefResponse = await client.query({ data: metafieldDefQuery });
+        
+        // --- ADJUSTED RESPONSE PARSING --- 
+        // Expecting response structure: body.data.metafieldDefinitions.edges[0].node.id
+        shopMetafieldGid = metafieldDefResponse?.body?.data?.metafieldDefinitions?.edges?.[0]?.node?.id;
+        // --- END ADJUSTED RESPONSE PARSING ---
+        
+        if (!shopMetafieldGid) {
+            console.error('[Metafield Updater] Failed to retrieve Metafield Definition GID using filters.', metafieldDefResponse?.body?.errors || 'Invalid response structure or definition not found');
+            return;
+        }
+        console.log(`[Metafield Updater] Got Metafield Definition GID: ${shopMetafieldGid}`);
+
+        console.log(`[Metafield Updater] Initialization successful! Shop GID: ${shopGid}, Metafield GID: ${shopMetafieldGid}`);
+
+    } catch (error) {
+        console.error('[Metafield Updater] Error during initialization try block:', error); 
+        shopGid = null;
+        shopMetafieldGid = null;
+    }
+}
+
+// Function to check active drop and update metafield
+async function updateShopMetafield() {
+    if (!shopGid || !shopMetafieldGid) {
+        // Don't run if initialization failed or hasn't completed
+        return; 
+    }
+
+    console.log('[Metafield Updater] Checking for active drop...');
+    let activeProductHandleValue = null; // Renamed variable for clarity
+    let fetchedActiveDropData = null; 
+    let dbError = null;
+
+    // --- Step 1: Fetch active drop data (product GID) --- 
+    try {
+        const { data, error } = await supabase
+            .from('drops')
+            .select('product_id') 
+            .eq('status', 'active')
+            .limit(1)
+            .maybeSingle(); 
+
+        if (error) {
+            dbError = error;
+        } else {
+            fetchedActiveDropData = data; // Contains { product_id: "gid://..." } or null
+        }
+    } catch (fetchCatchError) {
+        dbError = fetchCatchError;
+    }
+
+    // --- Step 2: Process fetched data, get Handle, and update metafield --- 
+    try {
+        if (dbError) {
+            console.error('[Metafield Updater] Error fetching active drop GID from Supabase:', dbError);
+            return; 
+        }
+
+        // --- NEW: Get Product Handle using GID --- 
+        if (fetchedActiveDropData && fetchedActiveDropData.product_id) {
+            const activeProductGid = fetchedActiveDropData.product_id;
+            console.log(`[Metafield Updater] Found active drop GID: ${activeProductGid}. Fetching handle...`);
+
+            // Get session for GraphQL client
+            const shopDomain = TARGET_SHOP_DOMAIN;
+            const sessionStorage = shopify.config.sessionStorage;
+            const sessions = await sessionStorage.findSessionsByShop(shopDomain);
+            if (!sessions || sessions.length === 0 || !sessions[0].accessToken) {
+                console.error(`[Metafield Updater] No valid session found for shop ${shopDomain} while fetching handle.`);
+                return;
+            }
+            const session = sessions[0];
+            const client = new shopify.clients.Graphql({ session });
+
+            // Query for the product handle
+            const handleQuery = `
+                query getProductHandle($id: ID!) {
+                    product(id: $id) {
+                        handle
+                    }
+                }
+            `;
+            const handleVariables = { id: activeProductGid };
+            const handleResponse = await client.query({ data: { query: handleQuery, variables: handleVariables } });
+            
+            const fetchedHandle = handleResponse?.body?.data?.product?.handle;
+            if (fetchedHandle) {
+                activeProductHandleValue = fetchedHandle;
+                console.log(`[Metafield Updater] Successfully fetched handle: ${activeProductHandleValue}`);
+            } else {
+                console.error(`[Metafield Updater] Failed to fetch handle for GID ${activeProductGid}. Response:`, handleResponse?.body?.errors || handleResponse?.body);
+                // Keep activeProductHandleValue as null if handle fetch fails
+            }
+        } else {
+            console.log('[Metafield Updater] No active drop GID found in Supabase.');
+            // activeProductHandleValue remains null
+        }
+        // --- END NEW: Get Product Handle --- 
+
+        // Only update if the handle value has changed
+        if (activeProductHandleValue !== lastActiveProductHandleSet) {
+            console.log(`[Metafield Updater] Active handle value changed (from ${lastActiveProductHandleSet} to ${activeProductHandleValue}). Updating metafield...`);
+
+            // Get session again (might be redundant if fetched above, but safe)
+            const shopDomain = TARGET_SHOP_DOMAIN;
+            const sessionStorage = shopify.config.sessionStorage;
+            const sessions = await sessionStorage.findSessionsByShop(shopDomain);
+            if (!sessions || sessions.length === 0 || !sessions[0].accessToken) {
+                console.error(`[Metafield Updater] No valid session found for shop ${shopDomain} during metafield update.`);
+                return;
+            }
+            const session = sessions[0];
+            const client = new shopify.clients.Graphql({ session });
+
+            // Construct the mutation (Value is now the handle string)
+            const mutation = `
+                mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+                  metafieldsSet(metafields: $metafields) {
+                    metafields {
+                      id
+                      key
+                      namespace
+                      value
+                    }
+                    userErrors {
+                      field
+                      message
+                      code
+                    }
+                  }
+                }
+            `;
+            const variables = {
+                metafields: [
+                    {
+                        key: "active_drop_product_handle",
+                        namespace: "custom",
+                        ownerId: shopGid, 
+                        type: "single_line_text_field",
+                        value: activeProductHandleValue || "" // Store the handle or empty string
+                    }
+                ]
+            };
+
+            const response = await client.query({ data: { query: mutation, variables } });
+
+            // Handle response
+            const userErrors = response?.body?.data?.metafieldsSet?.userErrors;
+            if (userErrors && userErrors.length > 0) {
+                console.error('[Metafield Updater] Error setting shop metafield:', userErrors);
+            } else if (response?.body?.data?.metafieldsSet?.metafields) {
+                console.log('[Metafield Updater] Shop metafield updated successfully:', response.body.data.metafieldsSet.metafields[0]);
+                lastActiveProductHandleSet = activeProductHandleValue; // Update tracked value
+            } else {
+                 console.error('[Metafield Updater] Unexpected response structure from metafieldsSet mutation:', response?.body);
+            }
+
+        } else {
+             console.log(`[Metafield Updater] Active product handle value (${activeProductHandleValue}) has not changed. No update needed.`);
+        }
+
+    } catch (processingError) {
+        console.error('[Metafield Updater] Error during update processing/GraphQL call:', processingError);
+    }
+}
+
+// --- End Metafield Update Logic ---
+
 
 // --- Main App Route (Non-Embedded) --- 
 // Serve the main app without checking session first. Frontend will handle auth check.
@@ -1513,7 +1843,7 @@ app.get(
 });
 
 // --- Start Server --- 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`----------------------------------------------------`);
     console.log(`Backend server started using @shopify/shopify-api!`);
     console.log(`  - Listening on port: ${PORT}`);
@@ -1522,5 +1852,11 @@ app.listen(PORT, () => {
     console.log(`➡️  To install/run app:`);
     console.log(`   ${HOST}/auth?shop=your-development-store.myshopify.com`);
     console.log(`----------------------------------------------------`);
+
+    // --- Initialize and Start Metafield Updater ---
+    await initializeMetafieldUpdater(); // Wait for initial setup
+    setInterval(updateShopMetafield, 15000); // Check every 15 seconds
+    // --- End Metafield Updater Start ---
+
 });
 // --- End of file ---

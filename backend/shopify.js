@@ -60,7 +60,7 @@ const shopify = shopifyApi({
     hostName: HOST.replace(/^https?:\/\//, ''),
     // hostScheme: 'https', // Keep commented out, let library infer
     // Use specific API version matching template
-    apiVersion: ApiVersion.January25, 
+    apiVersion: ApiVersion.October24,
     // RE-ADD isEmbeddedApp: true explicitly
     isEmbeddedApp: false, 
     sessionStorage: sessionDb,
