@@ -1470,15 +1470,53 @@ app.delete('/api/drops', validateSession, async (req, res) => {
 });
 // --- End NEW DELETE endpoint ---
 
+// --- NEW: DELETE /api/drops/completed - Clear all completed drops ---
+app.delete('/api/drops/completed', validateSession, async (req, res) => {
+    const shop = req.query.shop; // From validateSession
+    console.log(`[/api/drops/completed DELETE] Request received for shop: ${shop}`);
+
+    if (!shop) {
+        return res.status(400).json({ error: 'Shop parameter missing.' });
+    }
+
+    try {
+        // Use Supabase client to delete ALL drops with status 'completed' for the shop
+        const { count, error } = await supabase
+            .from('drops')
+            .delete()
+            .eq('shop', shop)         // Ensure it's for the correct shop
+            .eq('status', 'completed'); // IMPORTANT: Target only completed drops
+
+        if (error) {
+            console.error('[/api/drops/completed DELETE] Supabase Error:', error);
+            throw error; 
+        }
+
+        console.log(`[/api/drops/completed DELETE] Successfully deleted ${count ?? 0} completed drops for shop ${shop}.`);
+        res.status(200).json({ message: `Successfully cleared ${count ?? 0} completed drops.`, deleted_count: count ?? 0 });
+
+    } catch (error) {
+        console.error('[/api/drops/completed DELETE] Server Error:', error);
+        const errorMessage = error.message || 'Internal server error clearing completed drops.';
+        const errorCode = error.code;
+        let statusCode = 500;
+        if (errorCode === '42501') statusCode = 403; 
+        else if (error.status) statusCode = error.status; 
+        res.status(statusCode).json({ error: errorMessage });
+    }
+});
+// --- End NEW DELETE /completed endpoint ---
+
 // --- Metafield Update Logic ---
 const TARGET_SHOP_DOMAIN = 'dailydropmanager.myshopify.com'; // <-- HARDCODED: Replace if shop changes!
 // Global variable to track the last handle set in the metafield
 let lastActiveProductHandleSet = null;
-// Global variable to store Shop ID and Metafield ID (as GIDs)
+// Global variable to store Shop GID
 let shopGid = null; // e.g., "gid://shopify/Shop/12345"
-let shopMetafieldGid = null; // e.g., "gid://shopify/Metafield/67890"
+// Global variable to store the *instance ID* of the shop metafield
+let shopMetafieldInstanceGid = null; // e.g., "gid://shopify/Metafield/67890"
 
-// Function to get Shop GID and the specific Metafield GID
+// Function to get Shop GID and find the existing Metafield GID instance
 async function initializeMetafieldUpdater() {
     console.log('[Metafield Updater] Initializing...');
     
@@ -1511,7 +1549,7 @@ async function initializeMetafieldUpdater() {
         console.log(`[Metafield Updater] Using session with accessToken (prefix: ${session.accessToken.substring(0,5)}...) for shop ${session.shop} to initialize.`);
         const client = new shopify.clients.Graphql({ session });
 
-        // 1. Get Shop GID
+        // 1. Get Shop GID (remains the same)
         console.log('[Metafield Updater] Fetching Shop GID...');
         const shopQuery = `query { shop { id } }`;
         const shopResponse = await client.query({ data: shopQuery });
@@ -1522,52 +1560,47 @@ async function initializeMetafieldUpdater() {
         }
         console.log(`[Metafield Updater] Got Shop GID: ${shopGid}`);
 
-        // 2. Get Metafield Definition GID (we know namespace/key)
-        console.log('[Metafield Updater] Fetching Metafield Definition GID...');
-        // --- MODIFIED QUERY --- 
-        const metafieldDefQuery = `
+        // 2. Find *existing* Metafield instance ID for this shop
+        console.log('[Metafield Updater] Fetching existing Metafield instance ID...');
+        const metafieldInstanceQuery = `
             query {
-                metafieldDefinitions(
-                    first: 1, 
-                    ownerType: SHOP, 
-                    namespace: "custom", 
-                    key: "active_drop_product_handle"
-                ) {
-                    edges {
-                        node {
-                            id
-                        }
+                shop {
+                    metafield(namespace: "custom", key: "active_drop_product_handle") {
+                        id
+                        value
                     }
                 }
             }
         `;
-        // --- END MODIFIED QUERY ---
-        const metafieldDefResponse = await client.query({ data: metafieldDefQuery });
+        const metafieldInstanceResponse = await client.query({ data: metafieldInstanceQuery });
+        const existingMetafield = metafieldInstanceResponse?.body?.data?.shop?.metafield;
         
-        // --- ADJUSTED RESPONSE PARSING --- 
-        // Expecting response structure: body.data.metafieldDefinitions.edges[0].node.id
-        shopMetafieldGid = metafieldDefResponse?.body?.data?.metafieldDefinitions?.edges?.[0]?.node?.id;
-        // --- END ADJUSTED RESPONSE PARSING ---
-        
-        if (!shopMetafieldGid) {
-            console.error('[Metafield Updater] Failed to retrieve Metafield Definition GID using filters.', metafieldDefResponse?.body?.errors || 'Invalid response structure or definition not found');
-            return;
+        if (existingMetafield) {
+            shopMetafieldInstanceGid = existingMetafield.id;
+            // Initialize last handle value based on current metafield value
+            lastActiveProductHandleSet = existingMetafield.value;
+            console.log(`[Metafield Updater] Found existing Metafield instance GID: ${shopMetafieldInstanceGid} with value: '${lastActiveProductHandleSet}'`);
+        } else {
+            shopMetafieldInstanceGid = null; // No existing metafield found
+            lastActiveProductHandleSet = null;
+            console.log('[Metafield Updater] No existing Metafield instance found for custom.active_drop_product_handle.');
         }
-        console.log(`[Metafield Updater] Got Metafield Definition GID: ${shopMetafieldGid}`);
 
-        console.log(`[Metafield Updater] Initialization successful! Shop GID: ${shopGid}, Metafield GID: ${shopMetafieldGid}`);
+        console.log(`[Metafield Updater] Initialization successful! Shop GID: ${shopGid}, Initial Metafield Instance GID: ${shopMetafieldInstanceGid}, Initial Handle: '${lastActiveProductHandleSet}'`);
 
     } catch (error) {
         console.error('[Metafield Updater] Error during initialization try block:', error); 
         shopGid = null;
-        shopMetafieldGid = null;
+        shopMetafieldInstanceGid = null;
+        lastActiveProductHandleSet = null;
     }
 }
 
 // Function to check active drop and update metafield
 async function updateShopMetafield() {
-    if (!shopGid || !shopMetafieldGid) {
-        // Don't run if initialization failed or hasn't completed
+    if (!shopGid) {
+        // Don't run if initialization failed (shopGid is essential)
+        console.log('[Metafield Updater] Skipping update: Shop GID not initialized.')
         return; 
     }
 
@@ -1594,7 +1627,7 @@ async function updateShopMetafield() {
         dbError = fetchCatchError;
     }
 
-    // --- Step 2: Process fetched data, get Handle, and update metafield --- 
+    // --- Step 2: Process fetched data, get Handle, and update/delete metafield --- 
     try {
         if (dbError) {
             console.error('[Metafield Updater] Error fetching active drop GID from Supabase:', dbError);
@@ -1642,66 +1675,78 @@ async function updateShopMetafield() {
         }
         // --- END NEW: Get Product Handle --- 
 
-        // Only update if the handle value has changed
+        // Compare current state with last known state
+        console.log(`[Metafield Updater] Comparing: Current Handle='${activeProductHandleValue}', Last Set Handle='${lastActiveProductHandleSet}'`);
         if (activeProductHandleValue !== lastActiveProductHandleSet) {
-            console.log(`[Metafield Updater] Active handle value changed (from ${lastActiveProductHandleSet} to ${activeProductHandleValue}). Updating metafield...`);
-
-            // Get session again (might be redundant if fetched above, but safe)
-            const shopDomain = TARGET_SHOP_DOMAIN;
-            const sessionStorage = shopify.config.sessionStorage;
-            const sessions = await sessionStorage.findSessionsByShop(shopDomain);
-            if (!sessions || sessions.length === 0 || !sessions[0].accessToken) {
-                console.error(`[Metafield Updater] No valid session found for shop ${shopDomain} during metafield update.`);
-                return;
-            }
-            const session = sessions[0];
-            const client = new shopify.clients.Graphql({ session });
-
-            // Construct the mutation (Value is now the handle string)
-            const mutation = `
-                mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
-                  metafieldsSet(metafields: $metafields) {
-                    metafields {
-                      id
-                      key
-                      namespace
-                      value
-                    }
-                    userErrors {
-                      field
-                      message
-                      code
-                    }
-                  }
+            
+            // --- Only update if a NEW handle is found --- 
+            if (activeProductHandleValue !== null) {
+                // Get session again for GraphQL client
+                const shopDomain = TARGET_SHOP_DOMAIN;
+                const sessionStorage = shopify.config.sessionStorage;
+                const sessions = await sessionStorage.findSessionsByShop(shopDomain);
+                if (!sessions || sessions.length === 0 || !sessions[0].accessToken) {
+                    console.error(`[Metafield Updater] No valid session found for shop ${shopDomain} during update.`);
+                    return;
                 }
-            `;
-            const variables = {
-                metafields: [
-                    {
-                        key: "active_drop_product_handle",
-                        namespace: "custom",
-                        ownerId: shopGid, 
-                        type: "single_line_text_field",
-                        value: activeProductHandleValue || "" // Store the handle or empty string
+                const session = sessions[0];
+                const client = new shopify.clients.Graphql({ session });
+                
+                // Active drop exists - SET the metafield
+                console.log(`[Metafield Updater] Active handle value changed to '${activeProductHandleValue}'. Setting metafield...`);
+                const mutation = `
+                    mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+                      metafieldsSet(metafields: $metafields) {
+                        metafields {
+                          id
+                          key
+                          namespace
+                          value
+                        }
+                        userErrors {
+                          field
+                          message
+                        }
+                      }
                     }
-                ]
-            };
+                `;
+                const variables = {
+                    metafields: [
+                        {
+                            key: "active_drop_product_handle",
+                            namespace: "custom",
+                            ownerId: shopGid, 
+                            type: "single_line_text_field",
+                            value: activeProductHandleValue // Store the actual handle
+                        }
+                    ]
+                };
 
-            const response = await client.query({ data: { query: mutation, variables } });
+                const response = await client.query({ data: { query: mutation, variables } });
 
-            // Handle response
-            const userErrors = response?.body?.data?.metafieldsSet?.userErrors;
-            if (userErrors && userErrors.length > 0) {
-                console.error('[Metafield Updater] Error setting shop metafield:', userErrors);
-            } else if (response?.body?.data?.metafieldsSet?.metafields) {
-                console.log('[Metafield Updater] Shop metafield updated successfully:', response.body.data.metafieldsSet.metafields[0]);
-                lastActiveProductHandleSet = activeProductHandleValue; // Update tracked value
+                // Handle response
+                const userErrors = response?.body?.data?.metafieldsSet?.userErrors;
+                const createdOrUpdatedMetafield = response?.body?.data?.metafieldsSet?.metafields?.[0];
+
+                if (userErrors && userErrors.length > 0) {
+                    console.error('[Metafield Updater] Error setting shop metafield:', userErrors);
+                } else if (createdOrUpdatedMetafield) {
+                    console.log('[Metafield Updater] Shop metafield set successfully:', createdOrUpdatedMetafield);
+                    lastActiveProductHandleSet = activeProductHandleValue; // Update tracked handle
+                    shopMetafieldInstanceGid = createdOrUpdatedMetafield.id; // Store the new/updated instance ID
+                } else {
+                     console.error('[Metafield Updater] Unexpected response structure from metafieldsSet mutation:', response?.body);
+                }
             } else {
-                 console.error('[Metafield Updater] Unexpected response structure from metafieldsSet mutation:', response?.body);
+                // No active drop found. activeProductHandleValue is null.
+                // The comparison (activeProductHandleValue !== lastActiveProductHandleSet) was true, meaning the last active drop just ended.
+                // We do nothing here to leave the metafield with the previous handle.
+                console.log(`[Metafield Updater] Active drop ended. Metafield will retain last value: '${lastActiveProductHandleSet}'. No update needed.`);
             }
+             // --- End Update Logic ---
 
         } else {
-             console.log(`[Metafield Updater] Active product handle value (${activeProductHandleValue}) has not changed. No update needed.`);
+             console.log(`[Metafield Updater] Active product handle value ('${activeProductHandleValue}') has not changed. No update/delete needed.`);
         }
 
     } catch (processingError) {
@@ -1751,7 +1796,7 @@ app.get(
   if (process.env.NODE_ENV === 'development') {
     const vitePort = 5173; 
     const viteServerHttp = `http://localhost:${vitePort}`;
-    const HMR_HOST = process.env.VITE_HMR_HOST || 'ef36-47-145-133-162.ngrok-free.app'; 
+    const HMR_HOST = process.env.VITE_HMR_HOST || '7e2e-47-145-133-162.ngrok-free.app'; 
     const viteServerWssNgrokHostDefaultPort = `wss://${HMR_HOST}`; 
     const viteServerWssNgrokHostDevPort = `wss://${HMR_HOST}:${vitePort}`; 
     const viteServerWsLocalhost = `ws://localhost:${vitePort}`; // Add ws localhost back

@@ -23,7 +23,13 @@ import {
   useIndexResourceState,
   Badge,
   Pagination,
+  Icon,
+  Modal
 } from '@shopify/polaris';
+import { 
+  RefreshIcon,
+  DeleteIcon
+} from '@shopify/polaris-icons';
 import enTranslations from "@shopify/polaris/locales/en.json";
 import '@shopify/polaris/build/esm/styles.css';
 // import './index.css'; // Assuming you might have base styles - Comment out if not present
@@ -63,6 +69,17 @@ function App() {
   const [isBulkScheduling, setIsBulkScheduling] = useState(false); // <-- Add bulk scheduling state
   const [isAppending, setIsAppending] = useState(false); // <-- NEW: Append loading state
   const [isDeleting, setIsDeleting] = useState(false); // <-- NEW: Delete loading state
+  const [isClearingCompleted, setIsClearingCompleted] = useState(false);
+  // --- NEW: Confirmation Modal State ---
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+  const [confirmModalContent, setConfirmModalContent] = useState({
+    title: '',
+    body: '',
+    confirmAction: () => {},
+    confirmLabel: '',
+    destructive: false
+  });
+  // --- End Confirmation Modal State ---
 
   // --- NEW: Pagination State ---
   const [scheduledPage, setScheduledPage] = useState(1);
@@ -603,54 +620,101 @@ function App() {
 
   // --- NEW: Function to handle deletion of selected drops ---
   const handleDeleteSelectedDrops = useCallback(async (dropIdsToDelete) => {
-    const shop = getShop();
-    if (!shop || !sessionToken || !isAuthenticated) {
-      showToast('Authentication error. Cannot delete drops.', true);
-      return;
-    }
-
     if (!dropIdsToDelete || dropIdsToDelete.length === 0) {
       showToast('No drops selected to delete.', true);
       return;
     }
 
-    setIsDeleting(true);
-    console.log('[App.jsx Delete] Deleting drop IDs:', dropIdsToDelete);
+    // --- Open Confirmation Modal --- 
+    setConfirmModalContent({
+        title: 'Delete Scheduled Drops?',
+        body: `Are you sure you want to delete ${dropIdsToDelete.length} selected queued drop(s)? This action cannot be undone.`,
+        confirmAction: async () => { // Wrap the actual deletion logic
+            setIsConfirmModalOpen(false);
+            setIsDeleting(true);
+            console.log('[App.jsx Delete] Deleting drop IDs:', dropIdsToDelete);
+            const shop = getShop(); // Get shop inside confirmAction
+            try {
+                const response = await fetch(`/api/drops?shop=${encodeURIComponent(shop)}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${sessionToken}`,
+                    },
+                    body: JSON.stringify({ drop_ids: dropIdsToDelete }),
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                console.log('[App.jsx Delete] Drops deleted successfully:', result);
+                showToast(`${result.deleted_count || 0} queued drop(s) deleted successfully!`);
+                fetchScheduledDrops(1, rowsPerPage);
+            } catch (error) {
+                console.error('[App.jsx Delete] Error deleting drops:', error);
+                showToast(`Error deleting drops: ${error.message}`, true);
+            } finally {
+                setIsDeleting(false);
+            }
+        },
+        confirmLabel: 'Delete Drops',
+        destructive: true
+    });
+    setIsConfirmModalOpen(true);
+    // --- Actual deletion logic moved inside confirmAction --- 
+
+  }, [sessionToken, isAuthenticated, showToast, fetchScheduledDrops, rowsPerPage]);
+
+  // --- NEW: Callback to clear ALL completed drops --- 
+  const handleClearCompletedDrops = useCallback(async () => {
+    // This function will be called AFTER confirmation
+    const shop = getShop();
+    if (!shop || !sessionToken || !isAuthenticated) {
+      showToast('Authentication error. Cannot clear drops.', true);
+      return;
+    }
+
+    setIsClearingCompleted(true);
+    setIsConfirmModalOpen(false); // Close modal after confirming
+    console.log('[App.jsx Clear Completed] Clearing completed drops...');
 
     try {
-      const response = await fetch(`/api/drops?shop=${encodeURIComponent(shop)}`, {
+      const response = await fetch(`/api/drops/completed?shop=${encodeURIComponent(shop)}`, { // <-- Call the new endpoint
         method: 'DELETE',
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': `Bearer ${sessionToken}`,
         },
-        body: JSON.stringify({ drop_ids: dropIdsToDelete }),
       });
 
-      const result = await response.json(); // Try to parse JSON regardless of status
+      const result = await response.json(); 
 
       if (!response.ok) {
         throw new Error(result.error || `HTTP error! status: ${response.status}`);
       }
 
-      console.log('[App.jsx Delete] Drops deleted successfully:', result);
-      showToast(`${result.deleted_count || 0} queued drop(s) deleted successfully!`);
+      console.log('[App.jsx Clear Completed] Drops cleared successfully:', result);
+      showToast(`${result.deleted_count ?? 0} completed drop(s) cleared successfully!`);
 
-      // Refetch scheduled drops to update the UI
-      // Go back to page 1 after deletion
-      fetchScheduledDrops(1, rowsPerPage); 
-      // Clear selection
-      // Note: useIndexResourceState doesn't directly expose a clear selection function.
-      // Re-fetching data and letting the hook re-initialize with new data (and thus empty selection) is the standard pattern.
+      // Refetch completed drops to update the UI
+      fetchCompletedDrops(1, rowsPerPage); 
       
     } catch (error) {
-      console.error('[App.jsx Delete] Error deleting drops:', error);
-      showToast(`Error deleting drops: ${error.message}`, true);
+      console.error('[App.jsx Clear Completed] Error clearing drops:', error);
+      showToast(`Error clearing completed drops: ${error.message}`, true);
     } finally {
-      setIsDeleting(false); // Clear loading state
+      setIsClearingCompleted(false); 
     }
-  }, [sessionToken, isAuthenticated, showToast, fetchScheduledDrops, rowsPerPage]);
-  // --- END NEW Function ---
+  }, [sessionToken, isAuthenticated, showToast, fetchCompletedDrops, rowsPerPage]);
+
+  // --- Callback to open confirm modal for clearing completed drops --- 
+  const openClearCompletedConfirmModal = useCallback(() => {
+    setConfirmModalContent({
+      title: 'Clear Completed Drops?',
+      body: 'Are you sure you want to clear ALL completed drops? This action cannot be undone.',
+      confirmAction: handleClearCompletedDrops, // Point to the clearing function
+      confirmLabel: 'Clear Completed',
+      destructive: true
+    });
+    setIsConfirmModalOpen(true);
+  }, [handleClearCompletedDrops]);
 
   // --- Add selection handling for Scheduled Drops IndexTable ---
   const {
@@ -663,9 +727,9 @@ function App() {
   const promotedBulkActions = [
       {
           content: 'Delete selected queued drops',
-          onAction: () => handleDeleteSelectedDrops(selectedResources),
-          disabled: selectedResources.length === 0 || isDeleting, // Disable if none selected or already deleting
-          loading: isDeleting,
+          onAction: () => handleDeleteSelectedDrops(selectedResources), // Call the function that opens the modal
+          disabled: selectedResources.length === 0 || isDeleting, // Keep disabled state
+          // Remove loading state from here as it's handled after confirmation
       },
   ];
 
@@ -735,6 +799,36 @@ function App() {
     )
   );
 
+  // --- Define Row Markup for Completed Products Table (Add Link) ---
+  const completedDropsRowMarkup = completedDropsData.map(drop => {
+      const startDate = drop.start_time ? new Date(drop.start_time).toLocaleDateString() : '-';
+      const startTime = drop.start_time ? new Date(drop.start_time).toLocaleTimeString([], { hour: '2-digit', minute:'2-digit', hour12: true }) : '-';
+      const endTime = drop.end_time ? new Date(drop.end_time).toLocaleTimeString([], { hour: '2-digit', minute:'2-digit', hour12: true }) : '-';
+      const productIdNumeric = drop.product_id ? drop.product_id.split('/').pop() : null; // Extract numeric ID
+      const productAdminUrl = productIdNumeric ? `/admin/products/${productIdNumeric}` : null;
+
+      return [
+          <Thumbnail
+              source={drop.thumbnail_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_medium.png?format=webp&v=1530129081'}
+              alt={drop.title || 'Completed product'}
+              size="small"
+              key={`${drop.id}-thumb`}
+          />,
+          // --- ADD LINK to Product Title --- 
+          productAdminUrl ? (
+              <a href={productAdminUrl} target="_blank" rel="noopener noreferrer" style={{textDecoration: 'underline', color: 'var(--p-color-text-interactive)'}}>
+                  {drop.title || 'N/A'}
+              </a>
+          ) : (
+              drop.title || 'N/A' // Fallback if no ID/URL
+          ),
+          // --- END LINK ---
+          startDate,
+          startTime,
+          endTime
+      ];
+  });
+
   // --- Render Logic ---
 
   // Loading State
@@ -764,12 +858,20 @@ function App() {
     );
   }
 
-  // --- Authenticated App UI (Settings Layout Example Style) ---
   const toastMarkup = toastActive ? (
     <Toast content={toastMessage} onDismiss={toggleToastActive} error={toastIsError} />
   ) : null;
 
-  // Wrap the Page content in a Frame to provide context for the Toast
+  console.log('[App.jsx Render Check]', {
+    isLoading,
+    isAuthenticated,
+    activeDropData, // Log the current active drop state
+    scheduledDropsDataLength: scheduledDropsData?.length, // Log length of scheduled drops
+    // You could log the full scheduledDropsData array too, but length is often enough for initial check
+    // scheduledDropsData, 
+  });
+
+  // *** DEFINE pageContent HERE, before confirmationModalMarkup ***
   const pageContent = (
     <Page 
       title="Daily Drop Manager"
@@ -777,9 +879,9 @@ function App() {
           content: "Save Settings", 
           onAction: handleSaveSettings, 
           loading: isSaving, 
-          disabled: isBulkScheduling // Disable while bulk scheduling
+          disabled: isBulkScheduling
       }}
-      secondaryActions={[ // Add Schedule All as a secondary action
+      secondaryActions={[
           {
               content: "Schedule All Queued",
               onAction: handleScheduleAllDrops,
@@ -789,24 +891,22 @@ function App() {
                         !dropDateString || 
                         !dropTime || 
                         !dropDuration || 
-                        queuedProductsData.length === 0 // Also disable if no products are loaded
+                        queuedProductsData.length === 0 
           },
           {
-            // --- NEW Append Button ---
             content: "Append New Products",
             onAction: handleAppendDrops,
             loading: isAppending,
             disabled: isSaving || 
-                      isBulkScheduling || // Disable if other actions are running
+                      isBulkScheduling || 
                       queuedCollection === 'placeholder' || 
-                      !dropDuration || // Keep UI check for duration
-                      queuedProductsData.length === 0 // Disable if no products loaded in UI
+                      !dropDuration || 
+                      queuedProductsData.length === 0 
           }
       ]}
     >
-        <Layout>
-            {/* --- Settings Section (Following Example Layout) --- */}
-            {/* Restore first Layout.Section */}
+      <Layout>
+            {/* --- Settings Section --- */}
             <Layout.Section>
               <BlockStack gap={{ xs: "800", sm: "400" }}>
                   {/* Collections Settings Group */}
@@ -834,25 +934,10 @@ function App() {
                                   value={queuedCollection}
                                   disabled={allCollections.length === 0}
                               />
-                              {/* <Select
-                                  label="Active Product Collection"
-                                  options={collectionOptions}
-                                  onChange={setActiveCollection}
-                                  value={activeCollection}
-                                  disabled={allCollections.length === 0}
-                              /> */}
-                              {/* <Select
-                                  label="Completed Products Collection"
-                                  options={collectionOptions}
-                                  onChange={setCompletedCollection}
-                                  value={completedCollection}
-                                  disabled={allCollections.length === 0}
-                              /> */}
                           </BlockStack>
                       </Card>
                   </InlineGrid>
 
-                  {/* Divider */} 
                   {smUp ? <Divider /> : null}
 
                    {/* Drop Schedule Settings Group */}
@@ -901,27 +986,31 @@ function App() {
               </BlockStack>
             </Layout.Section>
             
-
-            {/* --- Active/Queued/Completed Sections (Temporarily Commented Out) --- */}
-             
             <Layout.Section>
               <BlockStack gap="400">
-                {/* Active Product - Updated Section */}
-                <LegacyCard title="Active Product">
+                {/* Active Product - ADD Refresh Button */} 
+                <LegacyCard 
+                  title="Active Product"
+                  actions={[{ 
+                    icon: RefreshIcon, 
+                    onAction: fetchActiveDrop,
+                    accessibilityLabel: 'Refresh Active Drop' 
+                  }]}
+                >
                   <LegacyCard.Section>
                     {isFetchingActiveDrop ? (
                        <Spinner accessibilityLabel="Loading active product..." size="small" /> 
                     ) : (
                       <DataTable
                         columnContentTypes={[
-                          'text', // Thumbnail
-                          'text', // Title
-                          'text', // Start Date
-                          'text', // Start Time
-                          'text'  // End Time
+                          'text',
+                          'text', 
+                          'text', 
+                          'text', 
+                          'text'  
                         ]}
                         headings={[
-                          'Product Image',
+                          'Image',
                           'Product Title',
                           'Start Date',
                           'Start Time',
@@ -940,18 +1029,17 @@ function App() {
                             activeDropData.end_time ? new Date(activeDropData.end_time).toLocaleTimeString([], { hour: '2-digit', minute:'2-digit' }) : '-'
                           ]
                         ] : [[<Text tone="subdued" alignment="center" as="span" key="no-active">No active product</Text>, '', '', '', '']]}
-                        // Hide footer if there's no active product to avoid empty footer
                         hideScrollIndicator={!activeDropData}
                       />
                     )}
                   </LegacyCard.Section>
                 </LegacyCard>
 
-                {/* Queued Products (Available to Schedule) - Remove Action Button */}
+                {/* Queued Products (Available to Schedule) */}
                 <LegacyCard title="Queued Products (Available to Schedule)">
-                    {isFetchingQueuedProducts ? (
+                   {isFetchingQueuedProducts ? (
                        <LegacyCard.Section>
-                           <Spinner accessibilityLabel="Loading queued products..." size="small" />
+                      <Spinner accessibilityLabel="Loading queued products..." size="small" />
                        </LegacyCard.Section>
                     ) : (
                        <IndexTable
@@ -960,13 +1048,11 @@ function App() {
                            plural: 'available products',
                          }}
                          itemCount={queuedProductsData.length}
-                         // No selection needed for this table currently
-                         headings={[
-                           { title: 'Product Image' },
+                      headings={[
+                           { title: 'Image' },
                            { title: 'Product Title' },
                          ]}
-                         // No promoted actions needed
-                         emptyState={ // Optional: Better empty state
+                         emptyState={ 
                             <Box paddingBlock="2000" paddingInline="2000" style={{ textAlign: 'center' }}>
                                 <Text as="p" tone="subdued">
                                     {queuedCollection === 'placeholder' ? 'Select a collection above to see available products.' : 'No products found in selected collection.'}
@@ -976,15 +1062,21 @@ function App() {
                        >
                          {queuedProductsRowMarkup}
                        </IndexTable>
-                    )}
+                   )}
                 </LegacyCard>
-                {/* --- END MOVED Queued Products --- */}
 
-                {/* --- NEW: Scheduled Drops (using IndexTable) --- */}
-                <LegacyCard title="Scheduled Drops (Upcoming)">
+                {/* Scheduled Drops - ADD Refresh Button & Total Count */} 
+                <LegacyCard 
+                  title={`Scheduled Drops (Total: ${isFetchingScheduledDrops ? '...' : scheduledTotalCount})`}
+                  actions={[{ 
+                      icon: RefreshIcon, 
+                      onAction: () => fetchScheduledDrops(scheduledPage, rowsPerPage),
+                      accessibilityLabel: 'Refresh Scheduled Drops'
+                  }]}
+                >
                     {isFetchingScheduledDrops ? (
-                        <LegacyCard.Section> {/* Keep section for spinner */}
-                          <Spinner accessibilityLabel="Loading scheduled drops..." size="small" />
+                        <LegacyCard.Section> 
+                      <Spinner accessibilityLabel="Loading scheduled drops..." size="small" />
                         </LegacyCard.Section>
                     ) : (
                         <IndexTable
@@ -997,28 +1089,26 @@ function App() {
                                 allResourcesSelected ? 'All' : selectedResources.length
                             }
                             onSelectionChange={handleSelectionChange}
-                            promotedBulkActions={promotedBulkActions} // <-- Add bulk actions here
-                            headings={[
+                            promotedBulkActions={promotedBulkActions} 
+                        headings={[
                                 { title: 'Image' },
                                 { title: 'Title' },
                                 { title: 'Starts' },
                                 { title: 'Starts At' },
                                 { title: 'Ends At' },
-                                { title: 'Status' }, // <-- Add Status heading
+                                { title: 'Status' }, 
                             ]}
-                            emptyState={ // Optional: Better empty state
+                            emptyState={ 
                                 <Box paddingBlock="2000" paddingInline="2000" style={{ textAlign: 'center' }}>
                                     <Text as="p" tone="subdued">
                                         No drops currently scheduled.
                                     </Text>
                                 </Box>
                             }
-                            // loading={isFetchingScheduledDrops} // Can use table loading state
                         >
                             {scheduledDropsRowMarkup}
                         </IndexTable>
                     )}
-                    {/* --- Add Pagination --- */}
                     {scheduledTotalCount > 0 && (
                        <Box paddingBlockStart="400" paddingInlineStart="200" paddingInlineEnd="200">
                            <Pagination
@@ -1036,56 +1126,51 @@ function App() {
                            />
                         </Box>
                     )}
-                    {/* --- End Pagination --- */}
                 </LegacyCard>
-                {/* --- END NEW Scheduled Drops --- */}
 
-                {/* Completed Products - Updated */} 
-                <LegacyCard title="Completed Products">
+                {/* Completed Products - ADD Refresh & Clear Buttons & Total Count */} 
+                <LegacyCard 
+                  title={`Completed Drops (Total: ${isFetchingCompletedDrops ? '...' : completedTotalCount})`}
+                  actions={[
+                      { 
+                          icon: RefreshIcon, 
+                          onAction: () => fetchCompletedDrops(completedPage, rowsPerPage),
+                          accessibilityLabel: 'Refresh Completed Drops'
+                      },
+                      {
+                          content: 'Clear All Completed', 
+                          onAction: openClearCompletedConfirmModal, 
+                          destructive: true,
+                          disabled: completedTotalCount === 0 || isClearingCompleted,
+                          loading: isClearingCompleted // <-- Reference to isClearingCompleted
+                      }
+                  ]}
+                >
                   <LegacyCard.Section>
                     {isFetchingCompletedDrops ? (
                       <Spinner accessibilityLabel="Loading completed products..." size="small" />
                     ) : (
                       <DataTable
                         columnContentTypes={[
-                          'text', // Thumbnail
-                          'text', // Title
-                          'text', // Start Date
-                          'text', // Start Time
-                          'text'  // End Time
+                          'text', 
+                          'text', 
+                          'text', 
+                          'text', 
+                          'text'  
                         ]}
                         headings={[
-                          'Product Image',
+                          'Image',
                           'Product Title',
                           'Start Date',
                           'Start Time',
                           'End Time'
                         ]}
-                        rows={completedDropsData.map(drop => {
-                          // Format dates/times as needed
-                          const startDate = drop.start_time ? new Date(drop.start_time).toLocaleDateString() : '-';
-                          const startTime = drop.start_time ? new Date(drop.start_time).toLocaleTimeString([], { hour: '2-digit', minute:'2-digit', hour12: true }) : '-';
-                          const endTime = drop.end_time ? new Date(drop.end_time).toLocaleTimeString([], { hour: '2-digit', minute:'2-digit', hour12: true }) : '-';
-
-                          return [
-                            <Thumbnail
-                                source={drop.thumbnail_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_medium.png?format=webp&v=1530129081'}
-                                alt={drop.title || 'Completed product'}
-                                size="small"
-                                key={`${drop.id}-thumb`}
-                            />,
-                            drop.title || 'N/A',
-                            startDate,
-                            startTime,
-                            endTime
-                          ];
-                        })}
-                        footerContent={completedDropsData.length === 0 ? 'No completed drops found.' : `Showing last ${completedDropsData.length} completed drops.`}
+                        rows={completedDropsRowMarkup} 
+                        footerContent={completedDropsData.length === 0 ? 'No completed drops found.' : ``} 
                         hideScrollIndicator={completedDropsData.length === 0}
                       />
                     )}
                   </LegacyCard.Section>
-                  {/* --- Add Pagination --- */}
                   {completedTotalCount > 0 && (
                      <Box paddingBlockStart="400" paddingInlineStart="200" paddingInlineEnd="200">
                          <Pagination
@@ -1103,33 +1188,43 @@ function App() {
                          />
                       </Box>
                   )}
-                  {/* --- End Pagination --- */}
                 </LegacyCard>
               </BlockStack>
-
-              {/* Add Footer Section for spacing and copyright */}
-              <Box paddingBlockStart="400" paddingBlockEnd="400"> {/* Add padding top and bottom */}
+              <Box paddingBlockStart="400" paddingBlockEnd="400">
                 <Text as="p" variant="bodySm" tone="subdued" alignment="center">
                   © {new Date().getFullYear()} Daily Drop Manager. All rights reserved.
                 </Text>
               </Box>
-
             </Layout.Section>
-                          
         </Layout>
     </Page>
   );
+  // *** END pageContent DEFINITION ***
 
-  // *** ADD LOGGING HERE ***
-  console.log('[App.jsx Render Check]', {
-    isLoading,
-    isAuthenticated,
-    activeDropData, // Log the current active drop state
-    scheduledDropsDataLength: scheduledDropsData?.length, // Log length of scheduled drops
-    // You could log the full scheduledDropsData array too, but length is often enough for initial check
-    // scheduledDropsData, 
-  });
-  // *** END LOGGING ***
+  const confirmationModalMarkup = (
+    <Modal
+      open={isConfirmModalOpen}
+      onClose={() => setIsConfirmModalOpen(false)}
+      title={confirmModalContent.title}
+      primaryAction={{
+        content: confirmModalContent.confirmLabel,
+        onAction: confirmModalContent.confirmAction,
+        destructive: confirmModalContent.destructive,
+        loading: isDeleting || isClearingCompleted // Show loading on confirm button
+      }}
+      secondaryActions={[
+        {
+          content: 'Cancel',
+          onAction: () => setIsConfirmModalOpen(false),
+          disabled: isDeleting || isClearingCompleted // Disable cancel while loading
+        },
+      ]}
+    >
+      <Modal.Section>
+        <Text as="p">{confirmModalContent.body}</Text>
+      </Modal.Section>
+    </Modal>
+  );
 
   // Main App Render
   return (
@@ -1137,6 +1232,7 @@ function App() {
       <Frame>{/* Ensure Frame wraps Page for Toast context */}
          {pageContent}
          {toastMarkup}
+         {confirmationModalMarkup}
       </Frame>
     </AppProvider>
   );
