@@ -175,6 +175,15 @@ const OAUTH_STATE_COOKIE_NAME = 'shopify_oauth_state';
 // These need to be defined *before* the wildcard '*'
 app.get('/auth', async (req, res) => {
     const shop = req.query.shop;
+    
+    // Add hardcoded shop domain check - only allow one specific store
+    const APPROVED_SHOP_DOMAIN = process.env.APPROVED_SHOP_DOMAIN || 'your-store-name.myshopify.com';
+    
+    if (shop !== APPROVED_SHOP_DOMAIN) {
+        console.log(`[/auth] Rejected unauthorized shop: ${shop}. Only ${APPROVED_SHOP_DOMAIN} is allowed.`);
+        return res.status(403).send('This application is private and not available for this store.');
+    }
+    
     if (!shop) {
         // If shop is missing, we can't redirect. Send back to the enter-shop page or show error.
         // Re-serving enter-shop.html might be the simplest.
@@ -259,6 +268,14 @@ app.get(
   async (req, res) => {
     console.log('[/auth/callback] State validated. Proceeding with manual token exchange.');
     const { shop, code } = req.query;
+    
+    // Add hardcoded shop domain check - only allow callbacks from approved store
+    const APPROVED_SHOP_DOMAIN = process.env.APPROVED_SHOP_DOMAIN || 'your-store-name.myshopify.com';
+    
+    if (shop !== APPROVED_SHOP_DOMAIN) {
+        console.log(`[/auth/callback] Rejected unauthorized shop: ${shop}. Only ${APPROVED_SHOP_DOMAIN} is allowed.`);
+        return res.status(403).send('This application is private and not available for this store.');
+    }
     
     // Ensure we clear the state cookie again just in case
     res.clearCookie(OAUTH_STATE_COOKIE_NAME);
@@ -1810,7 +1827,7 @@ app.get(
   if (process.env.NODE_ENV === 'development') {
     const vitePort = 5173; 
     const viteServerHttp = `http://localhost:${vitePort}`;
-    const HMR_HOST = process.env.VITE_HMR_HOST || '643a-47-145-133-162.ngrok-free.app'; 
+    const HMR_HOST = process.env.VITE_HMR_HOST || '4383-47-145-133-162.ngrok-free.app'; 
     const viteServerWssNgrokHostDefaultPort = `wss://${HMR_HOST}`; 
     const viteServerWssNgrokHostDevPort = `wss://${HMR_HOST}:${vitePort}`; 
     const viteServerWsLocalhost = `ws://localhost:${vitePort}`; // Add ws localhost back
