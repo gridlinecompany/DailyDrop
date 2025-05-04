@@ -110,7 +110,7 @@ function App() {
     setToastActive(true);
   }, []); // showToast itself doesn't have dependencies
 
-  // --- Utility function to fetch scheduled drops ---
+  // --- Utility function to fetch scheduled drops --- 
   // UPDATED to handle pagination
   const fetchScheduledDrops = useCallback(async (page = 1, limit = 5) => {
       const shop = getShop();
@@ -135,7 +135,7 @@ function App() {
 
       } catch (error) {
           console.error('[App.jsx Scheduled] Error fetching scheduled drops:', error);
-          showToast('Error loading scheduled drops.', true);
+          showToast('Error loading scheduled drops.', true); 
           setScheduledDropsData([]); // Clear on error
           setScheduledTotalCount(0);
       } finally {
@@ -235,7 +235,7 @@ function App() {
 
     console.log('[App.jsx Base] Verifying session...');
     const verificationHeaders = {
-      'Authorization': `Bearer ${currentToken}`,
+        'Authorization': `Bearer ${currentToken}`,
     };
     console.log('[App.jsx Base] Token being sent:', currentToken);
     console.log('[App.jsx Base] Headers being sent:', verificationHeaders);
@@ -277,11 +277,11 @@ function App() {
               // Process Settings
               if (settingsResult.status === 'fulfilled') {
                  const settingsData = settingsResult.value;
-                 console.log('[App.jsx Init] Fetched Settings:', settingsData);
-                 setQueuedCollection(settingsData?.queued_collection_id || 'placeholder');
+              console.log('[App.jsx Init] Fetched Settings:', settingsData);
+              setQueuedCollection(settingsData?.queued_collection_id || 'placeholder');
                  // setActiveCollection(settingsData?.active_collection_id || 'placeholder'); // <-- COMMENT OUT
                  // setCompletedCollection(settingsData?.completed_collection_id || 'placeholder'); // <-- COMMENT OUT
-                 setDropTime(settingsData?.drop_time || '10:00');
+              setDropTime(settingsData?.drop_time || '10:00');
                  setDropDuration(String(settingsData?.default_drop_duration_minutes || '60')); 
                  setDropDateString(settingsData?.default_drop_date || ''); 
               } else {
@@ -375,22 +375,22 @@ function App() {
 
       try {
         const response = await fetch(`/api/products-by-collection?shop=${encodeURIComponent(shop)}&collectionId=${queuedCollection}&limit=${limit}`, {
-          headers: {
-            'Authorization': `Bearer ${sessionToken}`,
-          },
+        headers: {
+          'Authorization': `Bearer ${sessionToken}`,
+        },
         });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
         const data = await response.json(); // Expect just the array now
         console.log(`[App.jsx Queued] Successfully fetched products. Count: ${data?.length || 0}.`);
-        setQueuedProductsData(data || []); // Ensure data is an array
+          setQueuedProductsData(data || []); // Ensure data is an array
       } catch (error) {
-        console.error('[App.jsx Queued] Error fetching products:', error);
-        setQueuedProductsData([]); // Clear data on error
+          console.error('[App.jsx Queued] Error fetching products:', error);
+          setQueuedProductsData([]); // Clear data on error
         showToast(`Error loading queued products: ${error.message}`, true);
       } finally {
-        setIsFetchingQueuedProducts(false);
+          setIsFetchingQueuedProducts(false);
       }
     };
 
@@ -905,7 +905,7 @@ function App() {
           }
       ]}
     >
-      <Layout>
+        <Layout>
             {/* --- Settings Section --- */}
             <Layout.Section>
               <BlockStack gap={{ xs: "800", sm: "400" }}>
@@ -985,7 +985,7 @@ function App() {
                   </InlineGrid>
               </BlockStack>
             </Layout.Section>
-            
+             
             <Layout.Section>
               <BlockStack gap="400">
                 {/* Active Product - ADD Refresh Button */} 
