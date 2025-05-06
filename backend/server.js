@@ -1076,6 +1076,7 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
         console.log(`[/api/drops/schedule-all POST] Step 2: GraphQL Client created.`);
 
         // 3. Execute GraphQL Query
+        // REMOVED comment line from query
         const productsQuery = `
           query getCollectionProducts($id: ID!, $first: Int!) {
             collection(id: $id) {
@@ -1089,26 +1090,27 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
                     url
                   }
                 }
-                // pageInfo { hasNextPage, endCursor } // Optional: for pagination
               }
             }
           }
         `;
         const variables = { id: queued_collection_id, first: 250 };
-        console.log(`[/api/drops/schedule-all POST] Step 3a: Executing GraphQL query for collection ${queued_collection_id}...`);
-        const productsResponse = await client.query({ data: { query: productsQuery, variables } });
-        console.log(`[/api/drops/schedule-all POST] Step 3b: GraphQL query completed.`);
-
+        console.log(`[/api/drops/schedule-all POST] Step 3a: Executing GraphQL request for collection ${queued_collection_id}...`);
+        
+        // Use client.request() instead of client.query()
+        const productsResponse = await client.request(productsQuery, { variables });
+        
+        console.log(`[/api/drops/schedule-all POST] Step 3b: GraphQL request completed.`);
+        
         // 4. Process GraphQL Response
-        if (productsResponse?.body?.errors) {
-            console.error('[/api/drops/schedule-all POST] GraphQL Errors fetching products:', JSON.stringify(productsResponse.body.errors, null, 2));
-            // Throw the error to be caught by the main catch block
-            throw new Error(`GraphQL error fetching products: ${productsResponse.body.errors[0].message}`); 
+        if (productsResponse?.data?.errors) { // Note: .request returns slightly different structure
+            console.error('[/api/drops/schedule-all POST] GraphQL Errors fetching products:', JSON.stringify(productsResponse.data.errors, null, 2));
+            throw new Error(`GraphQL error fetching products: ${productsResponse.data.errors[0].message}`); 
         }
-        const shopifyProductsData = productsResponse?.body?.data?.collection?.products?.nodes;
+        const shopifyProductsData = productsResponse?.data?.collection?.products?.nodes;
         if (!shopifyProductsData) { 
-            console.error('[/api/drops/schedule-all POST] Unexpected GraphQL response structure:', JSON.stringify(productsResponse?.body, null, 2));
-            if (!productsResponse?.body?.data?.collection) {
+            console.error('[/api/drops/schedule-all POST] Unexpected GraphQL response structure:', JSON.stringify(productsResponse?.data, null, 2));
+            if (!productsResponse?.data?.collection) {
                 console.error(`[/api/drops/schedule-all POST] Collection GID ${queued_collection_id} likely not found or access denied.`);
                 return res.status(404).json({ error: `Collection with ID ${queued_collection_id} not found or access denied.` });
             }
