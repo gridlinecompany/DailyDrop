@@ -1054,23 +1054,38 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
 
     const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body;
 
-    // ... validation ...
+    // ... input validation ...
 
     try {
         // 1. Get session from middleware (it's already validated)
         const session = req.shopifySession; 
         if (!session || !session.accessToken) {
-             // This should theoretically not happen if validateSession passed
-             console.error('[/api/drops/schedule-all POST] CRITICAL: Session missing from req after validateSession middleware!');
+             console.error('[/api/drops/schedule-all POST] CRITICAL: Session or accessToken missing from req after validateSession middleware!');
              throw new Error('Could not retrieve valid session token after middleware validation.');
         }
         
-        // Use the validated session directly to create the client
-        const client = new shopify.clients.Rest({ session }); 
-        console.log('[/api/drops/schedule-all POST] Shopify REST Client created using session from middleware.');
+        // Create client explicitly using properties from session
+        const client = new shopify.clients.Rest({
+            session: {
+                shop: session.shop,                 // Use shop from session
+                accessToken: session.accessToken,   // Use token from session
+                isOnline: session.isOnline          // Keep isOnline status
+            }
+        });
+        console.log(`[/api/drops/schedule-all POST] Shopify REST Client created explicitly using shop: ${session.shop}, token: ${session.accessToken?.substring(0, 5)}...`);
 
         // 2. Fetch products from the specified Shopify collection
-        // ... rest of the logic remains the same (fetching products, filtering, inserting drops) ...
+        console.log(`[/api/drops/schedule-all POST] Fetching products for collection ID: ${numericCollectionId}`);
+        const productsResponse = await client.get({
+            path: 'products',
+            query: {
+                collection_id: numericCollectionId,
+                fields: 'id,title,image', // Only fetch needed fields
+                status: 'active'
+            }
+        });
+
+        // ... rest of product handling, filtering, Supabase insert ...
 
     } catch (error) {
         console.error('[/api/drops/schedule-all POST] Server Error:', error);
