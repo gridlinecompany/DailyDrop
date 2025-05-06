@@ -347,6 +347,12 @@ function App() {
     
     console.log('[App.jsx WebSocket] Setting up WebSocket connection...');
     
+    // --- ADDED LOGGING ---
+    const shopDomain = getShop(); // Assuming getShop() returns the current shop identifier
+    const apiToken = sessionToken; // Assuming sessionToken holds the auth token
+    console.log(`[App.jsx WebSocket] Initializing with auth: shop=${shopDomain}, token=${apiToken ? 'Exists' : 'MISSING!'}`);
+    // --- END ADDED LOGGING ---
+    
     const socketInstance = io(backendBaseUrl, {
       auth: {
         token: sessionToken,
@@ -708,6 +714,15 @@ function App() {
       const result = await response.json();
       console.log('[App.jsx Settings] Settings saved successfully:', result);
       showToast('Settings saved successfully!');
+
+      // --- ADDED: Explicitly refetch settings via WebSocket ---
+      if (socket && socket.connected) {
+        console.log('[App.jsx Settings] Save successful, explicitly requesting settings update via WebSocket.');
+        socket.emit('get_settings');
+      } else {
+        console.warn('[App.jsx Settings] Socket not available or not connected, cannot explicitly refetch settings post-save.');
+      }
+      // --- END ADDED --- 
 
     } catch (error) {
       console.error('[App.jsx Settings] Error saving settings:', error);
