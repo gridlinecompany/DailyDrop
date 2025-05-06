@@ -74,6 +74,7 @@ function App() {
   // State for Drop Settings Card
   const [allCollections, setAllCollections] = useState([]);
   const [queuedCollection, setQueuedCollection] = useState('placeholder');
+  console.log('[App.jsx Render] queuedCollection state is currently:', queuedCollection);
   const [dropDateString, setDropDateString] = useState('');
   const [dropTime, setDropTime] = useState('10:00');
   const [dropDuration, setDropDuration] = useState('60'); // Keep as string for input field
