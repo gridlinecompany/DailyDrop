@@ -35,6 +35,11 @@ import enTranslations from "@shopify/polaris/locales/en.json";
 import '@shopify/polaris/build/esm/styles.css';
 // import './index.css'; // Assuming you might have base styles - Comment out if not present
 
+// --- Define Backend URL --- 
+const backendBaseUrl = import.meta.env.VITE_BACKEND_URL || ''; // Use env var or empty string for local dev
+console.log(`[App.jsx] Using backend base URL: ${backendBaseUrl || '(current origin)'}`);
+// ------------------------
+
 // Add the PageMark component outside the App component
 function PageMark({ isVisible }) {
   if (!isVisible) return null;
@@ -268,14 +273,14 @@ function App() {
       window.history.replaceState({}, document.title, `${window.location.pathname}?${params.toString()}`);
     } else if (!sessionToken) {
       console.log('[App.jsx Base] No token found. Redirecting to auth.');
-      window.location.href = `/auth?shop=${encodeURIComponent(shop)}`;
+      window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(shop)}`;
       return;
     }
 
     const currentToken = sessionToken || urlToken;
     if (!currentToken) {
       console.error('[App.jsx Base] Token check inconsistency. Redirecting.');
-      window.location.href = `/auth?shop=${encodeURIComponent(shop)}`;
+      window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(shop)}`;
       return;
     }
 
@@ -285,7 +290,7 @@ function App() {
     };
     console.log('[App.jsx Base] Token being sent:', currentToken);
     console.log('[App.jsx Base] Headers being sent:', verificationHeaders);
-    fetch(`/api/verify-session?shop=${encodeURIComponent(shop)}`, {
+    fetch(`${backendBaseUrl}/api/verify-session?shop=${encodeURIComponent(shop)}`, {
       headers: verificationHeaders,
     })
       .then(response => {
@@ -303,7 +308,7 @@ function App() {
           setIsAuthenticated(false);
           console.error('[App.jsx Base] Session verification failed. Status:', response.status);
           setSessionToken(null);
-          window.location.href = `/auth?shop=${encodeURIComponent(shop)}`;
+          window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(shop)}`;
           setIsLoading(false);
         }
       })
@@ -322,7 +327,7 @@ function App() {
     
     console.log('[App.jsx WebSocket] Setting up WebSocket connection...');
     
-    const socketInstance = io({
+    const socketInstance = io(backendBaseUrl, {
       auth: {
         token: sessionToken,
         shop: getShop()
@@ -666,7 +671,7 @@ function App() {
     console.log('[App.jsx Settings] Saving Settings Payload:', settingsPayload);
 
     try {
-      const response = await fetch(`/api/settings?shop=${encodeURIComponent(shop)}`, {
+      const response = await fetch(`${backendBaseUrl}/api/settings?shop=${encodeURIComponent(shop)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -736,7 +741,7 @@ function App() {
     console.log('[App.jsx Schedule All] Scheduling Drops Payload:', schedulePayload);
 
     try {
-      const response = await fetch(`/api/drops/schedule-all`, { // <-- Call the new endpoint
+      const response = await fetch(`${backendBaseUrl}/api/drops/schedule-all`, { // <-- Use backendBaseUrl
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -815,7 +820,7 @@ function App() {
     console.log('[App.jsx Append] Appending Drops Payload:', appendPayload);
 
     try {
-      const response = await fetch(`/api/drops/append`, { // <-- Call the append endpoint
+      const response = await fetch(`${backendBaseUrl}/api/drops/append`, { // <-- Use backendBaseUrl
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -875,7 +880,7 @@ function App() {
             console.log('[App.jsx Delete] Deleting drop IDs:', dropIdsToDelete);
             const shop = getShop(); // Get shop inside confirmAction
             try {
-                const response = await fetch(`/api/drops?shop=${encodeURIComponent(shop)}`, {
+                const response = await fetch(`${backendBaseUrl}/api/drops?shop=${encodeURIComponent(shop)}`, {
                     method: 'DELETE',
                     headers: {
                         'Content-Type': 'application/json',
@@ -916,7 +921,7 @@ function App() {
     console.log('[App.jsx Clear Completed] Clearing completed drops...');
 
     try {
-      const response = await fetch(`/api/drops/completed?shop=${encodeURIComponent(shop)}`, { // <-- Call the new endpoint
+      const response = await fetch(`${backendBaseUrl}/api/drops/completed?shop=${encodeURIComponent(shop)}`, { // <-- Use backendBaseUrl
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${sessionToken}`,

@@ -17,6 +17,7 @@ import { supabase } from './supabaseClient.js'; // ADD Supabase client import
 import rateLimit from 'express-rate-limit';
 import http from 'http';
 import { Server } from 'socket.io';
+import cors from 'cors'; // <-- ADDED
 
 // Define __dirname for ES module scope
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +47,15 @@ if (!SHOPIFY_API_KEY) {
 }
 
 const app = express();
+
+// --- Add CORS Middleware ---
+// WARNING: Allow all origins for now. Restrict this in production!
+// Replace with: app.use(cors({ origin: 'YOUR_FRONTEND_RENDER_URL' }));
+app.use(cors()); // <-- ADDED
+// -------------------------
+
+app.use(cookieParser());
+app.use(express.json());
 
 // --- Use cookie-parser middleware ---
 app.use(cookieParser());
@@ -1943,7 +1953,9 @@ app.get(
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // In production, restrict this to your actual frontend domain
+    // WARNING: Allow all origins for now. Restrict this in production!
+    // Replace with: origin: "YOUR_FRONTEND_RENDER_URL",
+    origin: "*", // <-- Kept permissive for now
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -2571,70 +2583,21 @@ function broadcastRefreshInstruction(shop) {
   }
 }
 
-server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT} with Socket.io support`);
-  // --- BEGIN: Refactored Interval Logic ---
-  const METAFIELD_UPDATE_INTERVAL_MS = 60000; // Check every 60 seconds
-
-  setInterval(async () => {
-    console.log(`[Interval] Running periodic metafield check...`);
-    let shopsToUpdate = [];
-
-    try {
-      // Query Supabase for distinct shops that have offline sessions
-      // NOTE: Adjust table/column names if different
-      const { data: sessions, error: sessionError } = await supabase
-        .from('shopify_sessions') // Your session table name
-        .select('shop, accessToken, isOnline') // Select necessary fields
-        .eq('isOnline', false); // Typically want offline sessions for background tasks
-
-      if (sessionError) {
-        console.error('[Interval] Error fetching sessions from Supabase:', sessionError);
-        return; // Cannot proceed without sessions
-      }
-
-      if (!sessions || sessions.length === 0) {
-        console.log('[Interval] No offline sessions found in database. Skipping metafield update.');
-        return;
-      }
-
-      // Use a Set to get unique shop domains
-      const uniqueShops = [...new Set(sessions.map(s => s.shop))];
-      console.log(`[Interval] Found ${uniqueShops.length} unique shop(s) with offline sessions.`);
-
-      // Create structured data for update function
-      shopsToUpdate = uniqueShops.map(shop => {
-        // Find the corresponding session object (preferring offline if multiple exist for a shop, though ideally only one offline)
-        const session = sessions.find(s => s.shop === shop && !s.isOnline) || sessions.find(s => s.shop === shop);
-        return { shop, session: new Session(session) }; // Reconstruct Session object if needed by shopify-api
-      }).filter(item => item.session && item.session.accessToken); // Ensure valid session found
-
-    } catch (error) {
-      console.error('[Interval] Exception during session fetching:', error);
-      return; // Stop if session fetching fails critically
-    }
-
-    // Iterate through the shops and update metafields
-    if (shopsToUpdate.length > 0) {
-        console.log(`[Interval] Updating metafields for ${shopsToUpdate.length} shop(s)...`);
-        for (const { shop, session } of shopsToUpdate) {
-            try {
-                // Call the refactored update function
-                await updateShopMetafield(shop, session);
-            } catch (updateError) {
-                // Log error for specific shop and continue with others
-                console.error(`[Interval] Error calling updateShopMetafield for shop ${shop}:`, updateError);
-            }
-        }
-        console.log(`[Interval] Finished periodic metafield check for ${shopsToUpdate.length} shop(s).`);
-    } else {
-        console.log(`[Interval] No valid sessions found to perform metafield updates.`);
-    }
-
-  }, METAFIELD_UPDATE_INTERVAL_MS);
-  // --- END: Refactored Interval Logic ---
+// --- Server Listening Logic ---
+const PORT_NUM = parseInt(process.env.PORT || '8081', 10); // Use Render's PORT or 8081 locally
+// Listen on 0.0.0.0 to be accessible in container environments like Render
+server.listen(PORT_NUM, '0.0.0.0', () => {
+  console.log(`Server listening on port ${PORT_NUM}`);
+  // Initialize monitoring or other startup tasks if needed
+  // initializeAllShops(); // Example if you had this
 });
-// --- End of file ---
+
+// --- REMOVE ANY SERVERLESS HANDLER EXPORT ---
+/*
+const serverless = require('serverless-http');
+const handler = serverless(app);
+module.exports.handler = handler;
+*/
 
 // Add near verifyApiRequest function
 // Retry logic for Shopify API calls
