@@ -1050,27 +1050,32 @@ app.post('/api/drops', validateSession, async (req, res) => {
 
 // --- NEW: POST /api/drops/schedule-all - Bulk schedule drops from a collection ---
 app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
-    // ... existing setup and validation ...
+    // --- Input Validation ---
+    const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body;
+    console.log(`[/api/drops/schedule-all POST] Start Handler. Shop: ${shop}, Collection GID: ${queued_collection_id}`); // Log entry
+    // ... other validation ...
+    let initialStartTime;
+    try {
+        // ... parse start time ...
+        initialStartTime = new Date(/*...*/);
+        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination.');
+    } catch (e) { 
+        console.error('[/api/drops/schedule-all POST] Error parsing date/time', e);
+        return res.status(400).json({ error: `Invalid start date/time: ${e.message}` });
+    }
+    console.log(`[/api/drops/schedule-all POST] Parsed initialStartTime: ${initialStartTime?.toISOString()}`);
 
     try {
-        // 1. Get session from middleware
+        // 1. Get session
         const session = req.shopifySession;
-        if (!session || !session.accessToken) {
-             console.error('[/api/drops/schedule-all POST] CRITICAL: Session or accessToken missing from req!');
-             throw new Error('Could not retrieve valid session token.');
-        }
-        console.log(`[/api/drops/schedule-all POST] Using Access Token: ${session.accessToken}`);
+        if (!session || !session.accessToken) { throw new Error('Session or accessToken missing.'); }
+        console.log(`[/api/drops/schedule-all POST] Step 1: Session retrieved. Token prefix: ${session.accessToken.substring(0,5)}...`);
 
-        // --- MODIFIED: Use GraphQL Client --- 
-        const client = new shopify.clients.Graphql({ session }); // Use the whole session object for GraphQL client
-        console.log(`[/api/drops/schedule-all POST] Shopify GraphQL Client created using session for shop: ${session.shop}.`);
-        // --- END MODIFICATION ---
+        // 2. Setup GraphQL Client
+        const client = new shopify.clients.Graphql({ session });
+        console.log(`[/api/drops/schedule-all POST] Step 2: GraphQL Client created.`);
 
-        // --- REMOVED TEMPORARY TEST FOR SHOP INFO ---
-
-        // 2. Fetch products using GraphQL
-        console.log(`[/api/drops/schedule-all POST] Fetching products using GraphQL for collection GID: ${queued_collection_id}`); // Use GID
-        
+        // 3. Execute GraphQL Query
         const productsQuery = `
           query getCollectionProducts($id: ID!, $first: Int!) {
             collection(id: $id) {
@@ -1089,78 +1094,61 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
             }
           }
         `;
-        
-        const variables = {
-            id: queued_collection_id, // Pass the GID directly
-            first: 250 // Fetch up to 250 products (GraphQL limit)
-        };
+        const variables = { id: queued_collection_id, first: 250 };
+        console.log(`[/api/drops/schedule-all POST] Step 3a: Executing GraphQL query for collection ${queued_collection_id}...`);
+        const productsResponse = await client.query({ data: { query: productsQuery, variables } });
+        console.log(`[/api/drops/schedule-all POST] Step 3b: GraphQL query completed.`);
 
-        const productsResponse = await client.query({ 
-            data: { query: productsQuery, variables } 
-        });
-
-        // --- MODIFIED: Handle GraphQL Response --- 
+        // 4. Process GraphQL Response
         if (productsResponse?.body?.errors) {
             console.error('[/api/drops/schedule-all POST] GraphQL Errors fetching products:', JSON.stringify(productsResponse.body.errors, null, 2));
-            throw new Error(`GraphQL error fetching products: ${productsResponse.body.errors[0].message}`);
+            // Throw the error to be caught by the main catch block
+            throw new Error(`GraphQL error fetching products: ${productsResponse.body.errors[0].message}`); 
         }
-
         const shopifyProductsData = productsResponse?.body?.data?.collection?.products?.nodes;
-        if (!shopifyProductsData) {
+        if (!shopifyProductsData) { 
             console.error('[/api/drops/schedule-all POST] Unexpected GraphQL response structure:', JSON.stringify(productsResponse?.body, null, 2));
-            // Check if collection itself was not found
             if (!productsResponse?.body?.data?.collection) {
                 console.error(`[/api/drops/schedule-all POST] Collection GID ${queued_collection_id} likely not found or access denied.`);
                 return res.status(404).json({ error: `Collection with ID ${queued_collection_id} not found or access denied.` });
             }
             return res.status(502).json({ error: 'Failed to parse products from Shopify GraphQL response.' });
-        }
-        
+         }
         const shopifyProducts = shopifyProductsData.map(node => ({
             id: node.id, // Keep GID format
             title: node.title,
             image: { src: node.featuredImage?.url || null } // Adapt to match REST structure expected later
         }));
-        // --- END MODIFICATION ---
+        console.log(`[/api/drops/schedule-all POST] Step 4: Processed GraphQL response. Found ${shopifyProducts.length} products.`);
+        if (shopifyProducts.length === 0) { return res.status(200).json({ message: 'No active products found in the specified collection to schedule.', scheduled_count: 0 }); }
 
-        if (shopifyProducts.length === 0) {
-            console.log(`[/api/drops/schedule-all POST] No active products found in collection ${queued_collection_id}.`);
-            return res.status(200).json({ message: 'No active products found in the specified collection to schedule.', scheduled_count: 0 });
-        }
-        console.log(`[/api/drops/schedule-all POST] Found ${shopifyProducts.length} active products in collection.`);
-
-        // 3. Filter out products already scheduled (compare GIDs)
-        console.log(`[/api/drops/schedule-all POST] Fetching existing queued drops from DB...`);
+        // 5. Fetch Existing Queued Drops from Supabase
+        console.log(`[/api/drops/schedule-all POST] Step 5a: Fetching existing queued drops from Supabase...`);
         const { data: existingQueuedDrops, error: fetchError } = await supabase
             .from('drops')
             .select('product_id')
             .eq('shop', shop)
             .eq('status', 'queued');
-        
-        if (fetchError) {
-            console.error('[/api/drops/schedule-all POST] Supabase fetch Error:', fetchError);
-            throw fetchError;
+        if (fetchError) { 
+            console.error('[/api/drops/schedule-all POST] Error fetching existing drops:', fetchError);
+            throw fetchError; 
         }
         const existingQueuedProductIds = new Set(existingQueuedDrops.map(d => d.product_id));
-        console.log(`[/api/drops/schedule-all POST] Found ${existingQueuedDrops.length} existing queued drops in DB.`);
+        console.log(`[/api/drops/schedule-all POST] Step 5b: Fetched ${existingQueuedDrops.length} existing drops.`);
 
-        const productsToSchedule = shopifyProducts.filter(p => 
-            !existingQueuedProductIds.has(p.id) // Compare GIDs directly
-        );
+        // 6. Filter Products
+        const productsToSchedule = shopifyProducts.filter(p => !existingQueuedProductIds.has(p.id));
+        console.log(`[/api/drops/schedule-all POST] Step 6: Filtered products. ${productsToSchedule.length} need scheduling.`);
+        if (productsToSchedule.length === 0) { return res.status(200).json({ message: 'All active products in the collection are already scheduled.', scheduled_count: 0 }); }
 
-        if (productsToSchedule.length === 0) {
-            console.log(`[/api/drops/schedule-all POST] All products in the collection are already scheduled.`);
-            return res.status(200).json({ message: 'All active products in the collection are already scheduled.', scheduled_count: 0 });
-        }
-        console.log(`[/api/drops/schedule-all POST] Scheduling ${productsToSchedule.length} new products.`);
-
-        // 4. Prepare bulk insert data
+        // 7. Prepare Bulk Insert Data
         const dropsToInsert = [];
-        let currentStartTime = initialStartTime; // Start from the parsed user input
-
+        let currentStartTime = initialStartTime;
+        console.log(`[/api/drops/schedule-all POST] Step 7a: Preparing data for bulk insert...`);
         for (const product of productsToSchedule) {
+            const durationMinsInt = parseInt(duration_minutes, 10); // Ensure duration is parsed here too
             const dropData = {
-                product_id: product.id, // Store GID
+                product_id: product.id, 
                 title: product.title,
                 thumbnail_url: product.image?.src || null,
                 start_time: currentStartTime.toISOString(),
@@ -1169,46 +1157,33 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
                 status: 'queued'
             };
             dropsToInsert.push(dropData);
-            // Increment start time for the next drop
-            currentStartTime = new Date(currentStartTime.getTime() + durationMinsInt * 60000); 
+            currentStartTime = new Date(currentStartTime.getTime() + durationMinsInt * 60000);
         }
+        console.log(`[/api/drops/schedule-all POST] Step 7b: Prepared ${dropsToInsert.length} objects for insert.`);
 
-        // 5. Perform bulk insert
-        console.log(`[/api/drops/schedule-all POST] Attempting to bulk insert ${dropsToInsert.length} drops...`);
-        const { data: insertedData, error: insertError } = await supabase
-            .from('drops')
-            .insert(dropsToInsert) 
-            .select(); // Select the inserted rows
-
-        if (insertError) {
-            console.error('[/api/drops/schedule-all POST] Supabase Insert Error:', insertError);
-            throw insertError;
+        // 8. Perform Bulk Insert
+        console.log(`[/api/drops/schedule-all POST] Step 8a: Performing Supabase bulk insert...`);
+        const { data: insertedData, error: insertError } = await supabase.from('drops').insert(dropsToInsert).select();
+        if (insertError) { 
+            console.error('[/api/drops/schedule-all POST] Error during bulk insert:', insertError);
+            throw insertError; 
         }
+        console.log(`[/api/drops/schedule-all POST] Step 8b: Bulk insert successful. Inserted ${insertedData?.length || 0} drops.`);
 
-        console.log(`[/api/drops/schedule-all POST] Successfully scheduled ${insertedData?.length || 0} drops.`);
-        // Broadcast refresh needed after successful scheduling
-        broadcastRefreshInstruction(shop); 
-        broadcastScheduledDrops(shop); // Also refresh scheduled list immediately
+        // 9. Send Success Response
+        console.log(`[/api/drops/schedule-all POST] Step 9: Sending success response.`);
+        broadcastRefreshInstruction(shop);
+        broadcastScheduledDrops(shop);
         res.status(201).json({ 
             message: `Successfully scheduled ${insertedData?.length || 0} new drops.`, 
             scheduled_count: insertedData?.length || 0,
-            // first_drop_start: dropsToInsert[0]?.start_time, // Optional: info about first drop
-            // last_drop_start: dropsToInsert[dropsToInsert.length - 1]?.start_time // Optional: info about last drop
         });
 
     } catch (error) {
-        console.error('[/api/drops/schedule-all POST] Server Error:', error);
-        // Handle potential GraphQL errors specifically if needed
+        console.error('[/api/drops/schedule-all POST] CAUGHT ERROR:', error); // Log the full error object
         const errorMessage = error.message || 'Internal server error scheduling drops.';
         let statusCode = 500;
-        if (error.response && error.response.status) { 
-             statusCode = error.response.status;
-        } else if (error.code) { // Supabase errors
-             if (error.code === '23505') statusCode = 409; 
-             else if (error.code === '42501') statusCode = 403; 
-        } else if (error.message.startsWith('GraphQL error')) {
-             statusCode = 502; // Bad Gateway if GraphQL failed
-        }
+        // ... existing status code logic ...
         res.status(statusCode).json({ error: errorMessage });
     }
 });
