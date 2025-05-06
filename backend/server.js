@@ -1844,29 +1844,34 @@ const io = new Server(server, {
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   const shop = socket.handshake.auth.shop;
-  
+  console.log(`[Socket.io Auth] Attempting auth. Shop: ${shop}, Token: ${token ? 'Exists' : 'MISSING'}`); // ADDED LOG
+
   if (!token || !shop) {
-    return next(new Error('Authentication error'));
+    console.error('[Socket.io Auth] Authentication error: Token or shop missing in handshake auth.'); // ADDED LOG
+    return next(new Error('Authentication error: Token or shop missing.')); // MODIFIED Error message
   }
-  
-  // Verify the token - similar to verifyApiRequest middleware
-  try {
-    const client = new shopify.clients.Rest({
-      session: { 
-        shop: shop,
-        accessToken: token,
-        isOnline: false, 
-      }
-    });
-    
-    // Store shop and token in socket for use in event handlers
-    socket.shop = shop;
-    socket.token = token;
-    next();
-  } catch (error) {
-    console.error('[Socket.io] Authentication error:', error);
-    next(new Error('Authentication failed'));
-  }
+
+  // --- TEMPORARILY SIMPLIFIED FOR DIAGNOSTICS ---
+  // try {
+  //   // const client = new shopify.clients.Rest({ // <-- TEMPORARILY COMMENTED OUT
+  //   //   session: { 
+  //   //     shop: shop,
+  //   //     accessToken: token,
+  //   //     isOnline: false, 
+  //   //   }
+  //   // });
+  //   console.log('[Socket.io Auth] Shopify client instantiation SKIPPED for diagnostics.'); // ADDED LOG
+  // } catch (error) {
+  //   console.error('[Socket.io Auth] Error during (skipped) Shopify client instantiation:', error); // MODIFIED LOG
+  //   return next(new Error('Authentication setup failed.')); // MODIFIED Error message
+  // }
+  // --- END TEMPORARY SIMPLIFICATION ---
+
+  // Store shop and token in socket for use in event handlers
+  socket.shop = shop;
+  socket.token = token;
+  console.log(`[Socket.io Auth] Successfully set socket.shop and socket.token for ${shop}. Calling next().`); // ADDED LOG
+  next();
 });
 
 // Socket.io connection handling
