@@ -1050,38 +1050,7 @@ app.post('/api/drops', validateSession, async (req, res) => {
 
 // --- NEW: POST /api/drops/schedule-all - Bulk schedule drops from a collection ---
 app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
-    // ... debug logs ...
-
-    const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body;
-
-    console.log(`[/api/drops/schedule-all POST] Request received for shop: ${shop}`);
-    console.log(`[/api/drops/schedule-all POST] Payload:`, req.body);
-
-    // --- Input Validation ---
-    if (!shop || !queued_collection_id || !start_date_string || !start_time_string || typeof duration_minutes === 'undefined' || duration_minutes === null) {
-        return res.status(400).json({ error: 'Missing required fields: shop, queued_collection_id, start_date_string, start_time_string, duration_minutes.' });
-    }
-    const durationMinsInt = parseInt(duration_minutes, 10);
-    if (isNaN(durationMinsInt) || durationMinsInt <= 0) {
-        return res.status(400).json({ error: 'Invalid duration_minutes. Must be a positive integer.' });
-    }
-    // --- ADD BACK numericCollectionId extraction ---
-    const collectionIdMatch = queued_collection_id.match(/\d+$/);
-    if (!collectionIdMatch) {
-        return res.status(400).json({ error: 'Invalid queued_collection_id format.' });
-    }
-    const numericCollectionId = collectionIdMatch[0]; 
-    // --- END ADD BACK ---
-
-    let initialStartTime;
-    try {
-        if (!/^\d{1,2}:\d{2}$/.test(start_time_string)) throw new Error('Invalid time format. Use HH:MM.');
-        initialStartTime = new Date(`${start_date_string}T${start_time_string}:00`);
-        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination.');
-    } catch (e) {
-        return res.status(400).json({ error: `Invalid start date/time: ${e.message}` });
-    }
-    // --- End Validation ---
+    // ... existing setup and validation ...
 
     try {
         // 1. Get session from middleware
@@ -1090,47 +1059,157 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
              console.error('[/api/drops/schedule-all POST] CRITICAL: Session or accessToken missing from req!');
              throw new Error('Could not retrieve valid session token.');
         }
+        console.log(`[/api/drops/schedule-all POST] Using Access Token: ${session.accessToken}`);
 
-        // Log the token being used
-        console.log(`[/api/drops/schedule-all POST] Using Access Token: ${session.accessToken}`); // <-- ADDED: Log full token
+        // --- MODIFIED: Use GraphQL Client --- 
+        const client = new shopify.clients.Graphql({ session }); // Use the whole session object for GraphQL client
+        console.log(`[/api/drops/schedule-all POST] Shopify GraphQL Client created using session for shop: ${session.shop}.`);
+        // --- END MODIFICATION ---
 
-        // Create client explicitly using properties from session
-        const client = new shopify.clients.Rest({
-            session: {
-                shop: session.shop,
-                accessToken: session.accessToken,
-                isOnline: session.isOnline
-            }
-        });
-        console.log(`[/api/drops/schedule-all POST] Shopify REST Client created explicitly using shop: ${session.shop}.`);
+        // --- REMOVED TEMPORARY TEST FOR SHOP INFO ---
 
-        // --- TEMPORARY TEST: Try fetching shop info --- 
-        try {
-            console.log('[/api/drops/schedule-all POST] TEST: Attempting to fetch shop info with current client...');
-            const shopInfoTest = await client.get({ path: 'shop' });
-            console.log('[/api/drops/schedule-all POST] TEST: Shop info fetch successful:', shopInfoTest?.body?.shop?.name);
-        } catch (testError) {
-            console.error('[/api/drops/schedule-all POST] TEST: Failed to fetch shop info:', testError);
-            // Decide if you want to stop here if the test fails
-            // throw new Error('Failed basic client test fetching shop info.'); 
-        }
-        // --- END TEMPORARY TEST ---
-
-        // 2. Fetch products from the specified Shopify collection
-        console.log(`[/api/drops/schedule-all POST] Fetching products for collection ID: ${numericCollectionId}`);
-        const productsResponse = await client.get({ // This is the line that was failing (around 1078 originally)
-            path: 'products',
-            query: {
-                collection_id: numericCollectionId,
-                fields: 'id,title,image',
-                status: 'active'
-            }
-        });
+        // 2. Fetch products using GraphQL
+        console.log(`[/api/drops/schedule-all POST] Fetching products using GraphQL for collection GID: ${queued_collection_id}`); // Use GID
         
-        // ... rest of handler ...
+        const productsQuery = `
+          query getCollectionProducts($id: ID!, $first: Int!) {
+            collection(id: $id) {
+              id
+              title
+              products(first: $first, filters: {productStatus: ACTIVE}) {
+                nodes {
+                  id
+                  title
+                  featuredImage {
+                    url
+                  }
+                }
+                // pageInfo { hasNextPage, endCursor } // Optional: for pagination
+              }
+            }
+          }
+        `;
+        
+        const variables = {
+            id: queued_collection_id, // Pass the GID directly
+            first: 250 // Fetch up to 250 products (GraphQL limit)
+        };
+
+        const productsResponse = await client.query({ 
+            data: { query: productsQuery, variables } 
+        });
+
+        // --- MODIFIED: Handle GraphQL Response --- 
+        if (productsResponse?.body?.errors) {
+            console.error('[/api/drops/schedule-all POST] GraphQL Errors fetching products:', JSON.stringify(productsResponse.body.errors, null, 2));
+            throw new Error(`GraphQL error fetching products: ${productsResponse.body.errors[0].message}`);
+        }
+
+        const shopifyProductsData = productsResponse?.body?.data?.collection?.products?.nodes;
+        if (!shopifyProductsData) {
+            console.error('[/api/drops/schedule-all POST] Unexpected GraphQL response structure:', JSON.stringify(productsResponse?.body, null, 2));
+            // Check if collection itself was not found
+            if (!productsResponse?.body?.data?.collection) {
+                console.error(`[/api/drops/schedule-all POST] Collection GID ${queued_collection_id} likely not found or access denied.`);
+                return res.status(404).json({ error: `Collection with ID ${queued_collection_id} not found or access denied.` });
+            }
+            return res.status(502).json({ error: 'Failed to parse products from Shopify GraphQL response.' });
+        }
+        
+        const shopifyProducts = shopifyProductsData.map(node => ({
+            id: node.id, // Keep GID format
+            title: node.title,
+            image: { src: node.featuredImage?.url || null } // Adapt to match REST structure expected later
+        }));
+        // --- END MODIFICATION ---
+
+        if (shopifyProducts.length === 0) {
+            console.log(`[/api/drops/schedule-all POST] No active products found in collection ${queued_collection_id}.`);
+            return res.status(200).json({ message: 'No active products found in the specified collection to schedule.', scheduled_count: 0 });
+        }
+        console.log(`[/api/drops/schedule-all POST] Found ${shopifyProducts.length} active products in collection.`);
+
+        // 3. Filter out products already scheduled (compare GIDs)
+        console.log(`[/api/drops/schedule-all POST] Fetching existing queued drops from DB...`);
+        const { data: existingQueuedDrops, error: fetchError } = await supabase
+            .from('drops')
+            .select('product_id')
+            .eq('shop', shop)
+            .eq('status', 'queued');
+        
+        if (fetchError) {
+            console.error('[/api/drops/schedule-all POST] Supabase fetch Error:', fetchError);
+            throw fetchError;
+        }
+        const existingQueuedProductIds = new Set(existingQueuedDrops.map(d => d.product_id));
+        console.log(`[/api/drops/schedule-all POST] Found ${existingQueuedDrops.length} existing queued drops in DB.`);
+
+        const productsToSchedule = shopifyProducts.filter(p => 
+            !existingQueuedProductIds.has(p.id) // Compare GIDs directly
+        );
+
+        if (productsToSchedule.length === 0) {
+            console.log(`[/api/drops/schedule-all POST] All products in the collection are already scheduled.`);
+            return res.status(200).json({ message: 'All active products in the collection are already scheduled.', scheduled_count: 0 });
+        }
+        console.log(`[/api/drops/schedule-all POST] Scheduling ${productsToSchedule.length} new products.`);
+
+        // 4. Prepare bulk insert data
+        const dropsToInsert = [];
+        let currentStartTime = initialStartTime; // Start from the parsed user input
+
+        for (const product of productsToSchedule) {
+            const dropData = {
+                product_id: product.id, // Store GID
+                title: product.title,
+                thumbnail_url: product.image?.src || null,
+                start_time: currentStartTime.toISOString(),
+                duration_minutes: durationMinsInt,
+                shop: shop,
+                status: 'queued'
+            };
+            dropsToInsert.push(dropData);
+            // Increment start time for the next drop
+            currentStartTime = new Date(currentStartTime.getTime() + durationMinsInt * 60000); 
+        }
+
+        // 5. Perform bulk insert
+        console.log(`[/api/drops/schedule-all POST] Attempting to bulk insert ${dropsToInsert.length} drops...`);
+        const { data: insertedData, error: insertError } = await supabase
+            .from('drops')
+            .insert(dropsToInsert) 
+            .select(); // Select the inserted rows
+
+        if (insertError) {
+            console.error('[/api/drops/schedule-all POST] Supabase Insert Error:', insertError);
+            throw insertError;
+        }
+
+        console.log(`[/api/drops/schedule-all POST] Successfully scheduled ${insertedData?.length || 0} drops.`);
+        // Broadcast refresh needed after successful scheduling
+        broadcastRefreshInstruction(shop); 
+        broadcastScheduledDrops(shop); // Also refresh scheduled list immediately
+        res.status(201).json({ 
+            message: `Successfully scheduled ${insertedData?.length || 0} new drops.`, 
+            scheduled_count: insertedData?.length || 0,
+            // first_drop_start: dropsToInsert[0]?.start_time, // Optional: info about first drop
+            // last_drop_start: dropsToInsert[dropsToInsert.length - 1]?.start_time // Optional: info about last drop
+        });
 
     } catch (error) {
-        // ... existing catch ...
+        console.error('[/api/drops/schedule-all POST] Server Error:', error);
+        // Handle potential GraphQL errors specifically if needed
+        const errorMessage = error.message || 'Internal server error scheduling drops.';
+        let statusCode = 500;
+        if (error.response && error.response.status) { 
+             statusCode = error.response.status;
+        } else if (error.code) { // Supabase errors
+             if (error.code === '23505') statusCode = 409; 
+             else if (error.code === '42501') statusCode = 403; 
+        } else if (error.message.startsWith('GraphQL error')) {
+             statusCode = 502; // Bad Gateway if GraphQL failed
+        }
+        res.status(statusCode).json({ error: errorMessage });
     }
 });
 
