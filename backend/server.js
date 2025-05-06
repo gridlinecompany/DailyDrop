@@ -1084,39 +1084,53 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
     // --- End Validation ---
 
     try {
-        // 1. Get session from middleware (it's already validated)
-        const session = req.shopifySession; 
+        // 1. Get session from middleware
+        const session = req.shopifySession;
         if (!session || !session.accessToken) {
-             console.error('[/api/drops/schedule-all POST] CRITICAL: Session or accessToken missing from req after validateSession middleware!');
-             throw new Error('Could not retrieve valid session token after middleware validation.');
+             console.error('[/api/drops/schedule-all POST] CRITICAL: Session or accessToken missing from req!');
+             throw new Error('Could not retrieve valid session token.');
         }
-        
+
+        // Log the token being used
+        console.log(`[/api/drops/schedule-all POST] Using Access Token: ${session.accessToken}`); // <-- ADDED: Log full token
+
         // Create client explicitly using properties from session
         const client = new shopify.clients.Rest({
             session: {
-                shop: session.shop,                 // Use shop from session
-                accessToken: session.accessToken,   // Use token from session
-                isOnline: session.isOnline          // Keep isOnline status
+                shop: session.shop,
+                accessToken: session.accessToken,
+                isOnline: session.isOnline
             }
         });
-        console.log(`[/api/drops/schedule-all POST] Shopify REST Client created explicitly using shop: ${session.shop}, token: ${session.accessToken?.substring(0, 5)}...`);
+        console.log(`[/api/drops/schedule-all POST] Shopify REST Client created explicitly using shop: ${session.shop}.`);
+
+        // --- TEMPORARY TEST: Try fetching shop info --- 
+        try {
+            console.log('[/api/drops/schedule-all POST] TEST: Attempting to fetch shop info with current client...');
+            const shopInfoTest = await client.get({ path: 'shop' });
+            console.log('[/api/drops/schedule-all POST] TEST: Shop info fetch successful:', shopInfoTest?.body?.shop?.name);
+        } catch (testError) {
+            console.error('[/api/drops/schedule-all POST] TEST: Failed to fetch shop info:', testError);
+            // Decide if you want to stop here if the test fails
+            // throw new Error('Failed basic client test fetching shop info.'); 
+        }
+        // --- END TEMPORARY TEST ---
 
         // 2. Fetch products from the specified Shopify collection
         console.log(`[/api/drops/schedule-all POST] Fetching products for collection ID: ${numericCollectionId}`);
-        const productsResponse = await client.get({
+        const productsResponse = await client.get({ // This is the line that was failing (around 1078 originally)
             path: 'products',
             query: {
                 collection_id: numericCollectionId,
-                fields: 'id,title,image', // Only fetch needed fields
+                fields: 'id,title,image',
                 status: 'active'
             }
         });
-
-        // ... rest of product handling, filtering, Supabase insert ...
+        
+        // ... rest of handler ...
 
     } catch (error) {
-        console.error('[/api/drops/schedule-all POST] Server Error:', error);
-        // ... existing error handling ...
+        // ... existing catch ...
     }
 });
 
