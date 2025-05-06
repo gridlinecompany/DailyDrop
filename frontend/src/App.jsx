@@ -698,6 +698,10 @@ function App() {
 
     setIsSaving(true); // Start loading indicator
     
+    // --- ADDED: Log current queuedCollection state --- 
+    console.log('[App.jsx Settings] Inside handleSaveSettings, current queuedCollection state:', queuedCollection);
+    // --- END ADDED ---
+
     const settingsPayload = {
         queued_collection_id: queuedCollection === 'placeholder' ? null : queuedCollection,
         drop_time: dropTime,
