@@ -100,6 +100,7 @@ function App() {
   const [isAppending, setIsAppending] = useState(false); 
   const [isDeleting, setIsDeleting] = useState(false); 
   const [isClearingCompleted, setIsClearingCompleted] = useState(false);
+  const [isStoppingQueue, setIsStoppingQueue] = useState(false); // ADDED for new button
   
   // --- Confirmation Modal State ---
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
@@ -1185,6 +1186,54 @@ function App() {
     }
   }, [socketError, isLoading]);
 
+  // --- ADDED: Function to Stop Active Drop and Clear Queue ---
+  const handleStopAndClearQueue = useCallback(async () => {
+    console.log('[App.jsx] handleStopAndClearQueue called.');
+    const shop = getShop();
+    const currentSessionToken = sessionToken; // Use state variable directly
+
+    if (!shop || !currentSessionToken) {
+      showToast('Error: Could not determine shop or session token. Please re-authenticate.', true);
+      console.error('[App.jsx handleStopAndClearQueue] Missing shop or sessionToken.');
+      return;
+    }
+
+    setConfirmModalContent({
+      title: 'Stop Active Drop & Clear Queue?',
+      body: 'Are you sure you want to stop the current active drop (if any), clear all scheduled drops, and reset the queued collection setting? This action cannot be undone.',
+      confirmAction: async () => {
+        setIsConfirmModalOpen(false);
+        setIsStoppingQueue(true);
+        console.log('[App.jsx handleStopAndClearQueue] User confirmed action.');
+        try {
+          const response = await fetch(`${backendBaseUrl}/api/drops/stop-and-clear-queue?shop=${encodeURIComponent(shop)}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${currentSessionToken}`,
+            },
+          });
+          const responseData = await response.json();
+          if (!response.ok) {
+            console.error('[App.jsx handleStopAndClearQueue] Error response from backend:', responseData);
+            showToast(`Error: ${responseData.error || 'Failed to stop and clear queue.'}`, true);
+          } else {
+            console.log('[App.jsx handleStopAndClearQueue] Success response from backend:', responseData);
+            showToast(responseData.message || 'Successfully stopped active drop and cleared queue.');
+            // Frontend will update via WebSocket messages
+          }
+        } catch (error) {
+          console.error('[App.jsx handleStopAndClearQueue] Network or other error:', error);
+          showToast('An error occurred. Please try again.', true);
+        }
+        setIsStoppingQueue(false);
+      },
+      confirmLabel: 'Stop & Clear',
+      destructive: true
+    });
+    setIsConfirmModalOpen(true);
+  }, [sessionToken, getShop, showToast]);
+
   // --- Render Logic ---
 
   // Loading State
@@ -1270,7 +1319,7 @@ function App() {
           content: "Save Settings", 
           onAction: handleSaveSettings, 
           loading: isSaving, 
-          disabled: isBulkScheduling
+          disabled: isBulkScheduling || isAppending || isStoppingQueue
       }}
       secondaryActions={[
           {
@@ -1278,6 +1327,8 @@ function App() {
               onAction: handleScheduleAllDrops,
               loading: isBulkScheduling,
               disabled: isSaving || 
+                        isAppending ||
+                        isStoppingQueue ||
                         queuedCollection === 'placeholder' || 
                         !dropDateString || 
                         !dropTime || 
@@ -1290,9 +1341,17 @@ function App() {
             loading: isAppending,
             disabled: isSaving || 
                       isBulkScheduling || 
+                      isStoppingQueue ||
                       queuedCollection === 'placeholder' || 
                       !dropDuration || 
                       queuedProductsData.length === 0 
+          },
+          {
+            content: "Stop Active & Clear Queue",
+            onAction: handleStopAndClearQueue,
+            loading: isStoppingQueue,
+            disabled: isSaving || isBulkScheduling || isAppending,
+            destructive: true,
           }
       ]}
     >

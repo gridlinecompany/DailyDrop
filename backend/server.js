@@ -1561,6 +1561,140 @@ app.delete('/api/drops/completed', validateSession, async (req, res) => {
 });
 // --- End NEW DELETE /completed endpoint ---
 
+// --- NEW: POST /api/drops/stop-and-clear-queue - Complete active, clear queue, reset settings ---
+app.post('/api/drops/stop-and-clear-queue', validateSession, async (req, res) => {
+    const shop = req.shopifySession?.shop;
+    console.log(`[/api/drops/stop-and-clear-queue POST] Request received for shop: ${shop}`);
+
+    if (!shop) {
+        console.error('[/api/drops/stop-and-clear-queue POST] Critical: Shop could not be determined from validated session.');
+        return res.status(400).json({ error: 'Shop could not be determined. Session may be invalid.' });
+    }
+
+    let activeDropCompletedTitle = null;
+    let queuedDropsDeletedCount = 0;
+    let settingsUpdated = false;
+
+    try {
+        // Step 1: Handle Active Drop (if any)
+        console.log(`[/api/drops/stop-and-clear-queue POST] Step 1: Checking for active drop for shop ${shop}...`);
+        const { data: activeDrop, error: activeDropError } = await supabase
+            .from('drops')
+            .select('id, title')
+            .eq('shop', shop)
+            .eq('status', 'active')
+            .maybeSingle();
+
+        if (activeDropError) {
+            console.error(`[/api/drops/stop-and-clear-queue POST] Supabase error fetching active drop for ${shop}:`, activeDropError);
+            throw activeDropError;
+        }
+
+        if (activeDrop) {
+            console.log(`[/api/drops/stop-and-clear-queue POST] Active drop found (ID: ${activeDrop.id}, Title: ${activeDrop.title}). Marking as completed.`);
+            const { error: updateActiveError } = await supabase
+                .from('drops')
+                .update({ status: 'completed', end_time: new Date().toISOString() })
+                .eq('id', activeDrop.id)
+                .eq('shop', shop);
+
+            if (updateActiveError) {
+                console.error(`[/api/drops/stop-and-clear-queue POST] Supabase error updating active drop ${activeDrop.id} to completed:`, updateActiveError);
+                throw updateActiveError;
+            }
+            activeDropCompletedTitle = activeDrop.title;
+            console.log(`[/api/drops/stop-and-clear-queue POST] Active drop ${activeDrop.id} marked as completed.`);
+
+            // Trigger metafield update and broadcast
+            if (req.shopifySession) {
+                console.log(`[/api/drops/stop-and-clear-queue POST] Triggering metafield update for shop ${shop} after completing active drop.`);
+                updateShopMetafield(shop, req.shopifySession); // Non-blocking, runs in background
+            }
+            io.to(shop).emit('active_drop', null); // Broadcast that there's no active drop
+            broadcastCompletedDrops(shop); // Broadcast updated completed drops list
+        } else {
+            console.log(`[/api/drops/stop-and-clear-queue POST] No active drop found for shop ${shop}.`);
+        }
+
+        // Step 2: Clear Queued Drops
+        console.log(`[/api/drops/stop-and-clear-queue POST] Step 2: Deleting queued drops for shop ${shop}...`);
+        const { count: deletedCount, error: deleteQueuedError } = await supabase
+            .from('drops')
+            .delete()
+            .eq('shop', shop)
+            .eq('status', 'queued');
+
+        if (deleteQueuedError) {
+            console.error(`[/api/drops/stop-and-clear-queue POST] Supabase error deleting queued drops for ${shop}:`, deleteQueuedError);
+            throw deleteQueuedError;
+        }
+        queuedDropsDeletedCount = deletedCount || 0;
+        console.log(`[/api/drops/stop-and-clear-queue POST] Deleted ${queuedDropsDeletedCount} queued drops for shop ${shop}.`);
+
+        // Step 3: Reset Queued Collection in Settings
+        console.log(`[/api/drops/stop-and-clear-queue POST] Step 3: Resetting queued_collection_id in app_settings for shop ${shop}...`);
+        const { error: updateSettingsError } = await supabase
+            .from('app_settings')
+            .update({ queued_collection_id: null })
+            .eq('shop', shop);
+
+        if (updateSettingsError) {
+            console.error(`[/api/drops/stop-and-clear-queue POST] Supabase error updating app_settings for ${shop}:`, updateSettingsError);
+            // Don't throw, as prior actions might have succeeded. Log and continue.
+            console.warn('Continuing after settings update error to allow response.');
+        } else {
+            settingsUpdated = true;
+            console.log(`[/api/drops/stop-and-clear-queue POST] Successfully reset queued_collection_id for shop ${shop}.`);
+        }
+
+        // Step 4: Broadcast Updates
+        console.log(`[/api/drops/stop-and-clear-queue POST] Step 4: Broadcasting updates to shop ${shop}...`);
+        broadcastScheduledDrops(shop); // Should be empty now
+        if (settingsUpdated) {
+            // Fetch and broadcast the updated settings to ensure client has the latest (especially the null collection_id)
+            const { data: currentSettings, error: fetchSettingsError } = await supabase
+                .from('app_settings')
+                .select('queued_collection_id, drop_time, default_drop_duration_minutes, default_drop_date')
+                .eq('shop', shop)
+                .maybeSingle();
+            if (fetchSettingsError) {
+                console.error(`[/api/drops/stop-and-clear-queue POST] Error fetching settings for broadcast after update for ${shop}:`, fetchSettingsError);
+            } else {
+                io.to(shop).emit('settings', currentSettings || {
+                    queued_collection_id: null,
+                    drop_time: '10:00',
+                    default_drop_duration_minutes: 60,
+                    default_drop_date: null
+                });
+            }
+        }
+
+        // Construct success message
+        let message = "Queue and settings updated.";
+        if (activeDropCompletedTitle) {
+            message = `Active drop '${activeDropCompletedTitle}' completed. `;
+        } else {
+            message = "No active drop to complete. ";
+        }
+        message += `${queuedDropsDeletedCount} scheduled drops cleared.`;
+        if (settingsUpdated) {
+            message += " Queued collection setting reset.";
+        }
+
+        console.log(`[/api/drops/stop-and-clear-queue POST] Operation successful for shop ${shop}. Message: ${message}`);
+        res.status(200).json({ 
+            message: message,
+            activeDropCompleted: !!activeDropCompletedTitle,
+            queuedDropsCleared: queuedDropsDeletedCount,
+            settingsReset: settingsUpdated
+        });
+
+    } catch (error) {
+        console.error(`[/api/drops/stop-and-clear-queue POST] Overall error for shop ${shop}:`, error);
+        res.status(500).json({ error: 'An error occurred while stopping the queue and clearing drops.' });
+    }
+});
+
 // --- Metafield Update Logic ---
 // ADD: In-memory cache for shop GIDs and metafield instance GIDs
 let shopMetafieldCache = {}; // Structure: { shop: { shopGid: '...', instanceGid: '...' } }
