@@ -1054,7 +1054,34 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
 
     const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body;
 
-    // ... input validation ...
+    console.log(`[/api/drops/schedule-all POST] Request received for shop: ${shop}`);
+    console.log(`[/api/drops/schedule-all POST] Payload:`, req.body);
+
+    // --- Input Validation ---
+    if (!shop || !queued_collection_id || !start_date_string || !start_time_string || typeof duration_minutes === 'undefined' || duration_minutes === null) {
+        return res.status(400).json({ error: 'Missing required fields: shop, queued_collection_id, start_date_string, start_time_string, duration_minutes.' });
+    }
+    const durationMinsInt = parseInt(duration_minutes, 10);
+    if (isNaN(durationMinsInt) || durationMinsInt <= 0) {
+        return res.status(400).json({ error: 'Invalid duration_minutes. Must be a positive integer.' });
+    }
+    // --- ADD BACK numericCollectionId extraction ---
+    const collectionIdMatch = queued_collection_id.match(/\d+$/);
+    if (!collectionIdMatch) {
+        return res.status(400).json({ error: 'Invalid queued_collection_id format.' });
+    }
+    const numericCollectionId = collectionIdMatch[0]; 
+    // --- END ADD BACK ---
+
+    let initialStartTime;
+    try {
+        if (!/^\d{1,2}:\d{2}$/.test(start_time_string)) throw new Error('Invalid time format. Use HH:MM.');
+        initialStartTime = new Date(`${start_date_string}T${start_time_string}:00`);
+        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination.');
+    } catch (e) {
+        return res.status(400).json({ error: `Invalid start date/time: ${e.message}` });
+    }
+    // --- End Validation ---
 
     try {
         // 1. Get session from middleware (it's already validated)
