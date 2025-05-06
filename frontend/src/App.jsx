@@ -63,6 +63,8 @@ function PageMark({ isVisible }) {
 function App() {
   // --- State Variables (Minimal Base) ---
   const [isLoading, setIsLoading] = useState(true);
+  const [promptForShop, setPromptForShop] = useState(false);
+  const [enteredShop, setEnteredShop] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [sessionToken, setSessionToken] = useState(null); // Store JWT
   const [socket, setSocket] = useState(null);
@@ -189,6 +191,20 @@ function App() {
     setTimeout(() => setIsUpdating(false), 500);
   };
 
+  // --- ADDED: Handler for submitting entered shop ---
+  const handleShopSubmit = useCallback(() => {
+    const trimmedShop = enteredShop.trim();
+    // Basic validation - check if it includes .myshopify.com and isn't empty
+    if (!trimmedShop || !trimmedShop.includes('.myshopify.com')) {
+      showToast('Please enter a valid .myshopify.com domain', true);
+      return;
+    }
+    // Redirect to backend auth route
+    console.log(`[App.jsx Shop Prompt] Redirecting to auth for shop: ${trimmedShop}`);
+    window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(trimmedShop)}`;
+  }, [enteredShop, showToast]); // Add backendBaseUrl if needed, but it's top-level scope
+  // --- END ADDED HANDLER ---
+
   // --- WebSocket-based fetch functions (define before use) ---
   const setupSocketFunctions = useCallback((socketInstance) => {
     if (!socketInstance) return;
@@ -261,10 +277,14 @@ function App() {
     const shop = getShop();
 
     if (!shop) {
-      console.error('[App.jsx Base] Critical Error: Shop parameter missing.');
-      setIsLoading(false);
-      return;
+      console.log('[App.jsx Base] Shop parameter missing. Prompting user.');
+      setPromptForShop(true);
+      setIsLoading(false); // Stop loading to show the prompt
+      return; // Don't proceed further in this effect run
     }
+
+    // If shop exists, ensure we are not prompting
+    setPromptForShop(false); 
 
     if (urlToken) {
       console.log('[App.jsx Base] Found token in URL.');
@@ -1142,8 +1162,43 @@ function App() {
       </AppProvider>
     );
   }
+  
+  // --- ADDED: Render Enter Shop Prompt --- 
+  if (promptForShop) {
+      return (
+          <AppProvider i18n={enTranslations}>
+              <Frame>{/* Frame for potential early Toasts */}
+                <Page title="Enter Your Shop Domain">
+                  <Layout>
+                    <Layout.Section>
+                      <Card>
+                        <BlockStack gap="400">
+                          <Text as="p" tone="subdued">
+                            Please enter your shop's .myshopify.com domain to connect.
+                          </Text>
+                          <TextField
+                            label="Shop Domain"
+                            labelHidden
+                            value={enteredShop}
+                            onChange={setEnteredShop}
+                            placeholder="your-store-name.myshopify.com"
+                            autoComplete="off"
+                          />
+                          <Button variant="primary" onClick={handleShopSubmit}>
+                            Continue
+                          </Button>
+                        </BlockStack>
+                      </Card>
+                    </Layout.Section>
+                  </Layout>
+                </Page>
+              </Frame>
+          </AppProvider>
+      );
+  }
+  // --- END ADDED RENDER --- 
 
-  // Auth Failed State
+  // Auth Failed State (This might be less likely to show now, but keep for edge cases)
   if (!isAuthenticated) {
     return (
       <AppProvider i18n={enTranslations}>
