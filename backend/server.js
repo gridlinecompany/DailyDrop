@@ -390,10 +390,16 @@ app.get(
         }
         // --- END LOGGING ---
 
-        // --- Redirect to App --- 
-        const redirectUrl = `/?shop=${encodeURIComponent(shop)}&token=${encodeURIComponent(tokenData.access_token)}`;
-        console.log(`[/auth/callback] Redirecting to ${redirectUrl}`);
+        // --- Redirect to FRONTEND App --- 
+        const frontendUrl = process.env.FRONTEND_URL; // Read from environment variable
+        if (!frontendUrl) {
+            console.error("CRITICAL: FRONTEND_URL environment variable is not set!");
+            return res.status(500).send("Internal Server Error: Application frontend URL is not configured.");
+        }
+        const redirectUrl = `${frontendUrl}/?shop=${encodeURIComponent(shop)}&token=${encodeURIComponent(tokenData.access_token)}`;
+        console.log(`[/auth/callback] Redirecting to Frontend URL: ${redirectUrl}`);
         res.redirect(redirectUrl);
+        // --- END Redirect ---
 
     } catch (error) {
         console.error('[/auth/callback] Error during manual token exchange or session storage:', error);
