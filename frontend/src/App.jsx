@@ -467,7 +467,13 @@ function App() {
     const handleSettings = (data) => {
       console.log('[App.jsx WebSocket] Received settings update:', data);
       if (data) {
-        setQueuedCollection(data.queued_collection_id || 'placeholder');
+        // Only update queuedCollection from WebSocket if it's currently just a placeholder
+        // or if the incoming data specifically provides a new GID that's different from the current one.
+        if (queuedCollection === 'placeholder' || 
+            (data.queued_collection_id && data.queued_collection_id !== queuedCollection)) {
+          setQueuedCollection(data.queued_collection_id || 'placeholder');
+        }
+        
         const newDropTime = data.drop_time || '10:00';
         setDropTime(newDropTime);
         setDropDuration(String(data.default_drop_duration_minutes || '60')); 
