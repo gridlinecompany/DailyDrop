@@ -1395,8 +1395,15 @@ app.get('/api/settings', validateSession, async (req, res) => {
 
 // --- NEW: API endpoint to save settings --- 
 app.post('/api/settings', validateSession, async (req, res) => {
-    const shop = req.query.shop; // From validateSession or could be passed in body
+    const shop = req.shopifySession?.shop; // Get shop from the validated session
     console.log(`[/api/settings POST] Request received for shop: ${shop}`);
+
+    if (!shop) {
+        // This should ideally not be reached if validateSession is working correctly
+        // and req.shopifySession is always populated with a valid session.
+        console.error('[/api/settings POST] Critical: Shop could not be determined from validated session.');
+        return res.status(400).json({ error: 'Shop could not be determined. Session may be invalid.' });
+    }
     
     // Extract expected settings fields from the request body
     const {
