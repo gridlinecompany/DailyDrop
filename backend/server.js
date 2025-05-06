@@ -1081,8 +1081,8 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
             collection(id: $id) {
               id
               title
-              # ADDED sortKey argument
-              products(first: $first, sortKey: CREATED_AT) { 
+              # Changed sortKey to CREATED
+              products(first: $first, sortKey: CREATED) { 
                 nodes {
                   id
                   title
@@ -1095,7 +1095,8 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
           }
         `;
         const variables = { id: queued_collection_id, first: 250 };
-        console.log(`[/api/drops/schedule-all POST] Step 3a: Executing GraphQL request for collection ${queued_collection_id}, sorting by CREATED_AT ASC...`);
+        // Updated log message
+        console.log(`[/api/drops/schedule-all POST] Step 3a: Executing GraphQL request for collection ${queued_collection_id}, sorting by CREATED ASC...`);
         
         const productsResponse = await client.request(productsQuery, { variables });
         
