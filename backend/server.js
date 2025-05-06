@@ -1076,13 +1076,12 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
         console.log(`[/api/drops/schedule-all POST] Step 2: GraphQL Client created.`);
 
         // 3. Execute GraphQL Query
-        // REMOVED comment line from query
         const productsQuery = `
           query getCollectionProducts($id: ID!, $first: Int!) {
             collection(id: $id) {
               id
               title
-              products(first: $first, filters: {productStatus: ACTIVE}) {
+              products(first: $first) { 
                 nodes {
                   id
                   title
@@ -1097,16 +1096,15 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
         const variables = { id: queued_collection_id, first: 250 };
         console.log(`[/api/drops/schedule-all POST] Step 3a: Executing GraphQL request for collection ${queued_collection_id}...`);
         
-        // Use client.request() instead of client.query()
         const productsResponse = await client.request(productsQuery, { variables });
         
         console.log(`[/api/drops/schedule-all POST] Step 3b: GraphQL request completed.`);
         
         // 4. Process GraphQL Response
-        if (productsResponse?.data?.errors) { // Note: .request returns slightly different structure
-            console.error('[/api/drops/schedule-all POST] GraphQL Errors fetching products:', JSON.stringify(productsResponse.data.errors, null, 2));
-            throw new Error(`GraphQL error fetching products: ${productsResponse.data.errors[0].message}`); 
-        }
+        if (productsResponse?.data?.errors) {
+             console.error('[/api/drops/schedule-all POST] GraphQL Errors fetching products:', JSON.stringify(productsResponse.data.errors, null, 2));
+             throw new Error(`GraphQL error fetching products: ${productsResponse.data.errors[0].message}`); 
+         }
         const shopifyProductsData = productsResponse?.data?.collection?.products?.nodes;
         if (!shopifyProductsData) { 
             console.error('[/api/drops/schedule-all POST] Unexpected GraphQL response structure:', JSON.stringify(productsResponse?.data, null, 2));
