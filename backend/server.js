@@ -1436,6 +1436,10 @@ app.post('/api/settings', validateSession, async (req, res) => {
         // created_at and updated_at are handled by defaults/triggers in Supabase
     };
 
+    // --- ADDED: Log settingsData before upsert ---
+    console.log('[/api/settings POST] Data being upserted to Supabase:', settingsData);
+    // --- END ADDED ---
+
     try {
         // Use Supabase client's upsert
         // Upsert will insert if the shop doesn't exist, or update if it does.
