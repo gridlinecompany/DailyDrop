@@ -467,9 +467,20 @@ function App() {
       console.log('[App.jsx WebSocket] Received settings update:', data);
       if (data) {
         setQueuedCollection(data.queued_collection_id || 'placeholder');
-        setDropTime(data.drop_time || '10:00');
+        const newDropTime = data.drop_time || '10:00';
+        setDropTime(newDropTime);
         setDropDuration(String(data.default_drop_duration_minutes || '60')); 
         setDropDateString(data.default_drop_date || '');
+
+        // --- ADDED: Log state in next tick ---
+        setTimeout(() => {
+          // Note: This will log the value of dropTime from the *next render* closure,
+          // so we read it directly from a ref or a new state variable if we wanted to be 100% sure
+          // of the immediate post-set value. However, for debugging if the update is happening at all,
+          // logging the new value directly is a good indicator.
+          console.log(`[App.jsx WebSocket] handleSettings: dropTime should be '${newDropTime}' after update.`);
+        }, 0);
+        // --- END ADDED ---
       }
     };
     
