@@ -1052,13 +1052,32 @@ app.post('/api/drops', validateSession, async (req, res) => {
 app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
     // --- Input Validation ---
     const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body;
-    console.log(`[/api/drops/schedule-all POST] Start Handler. Shop: ${shop}, Collection GID: ${queued_collection_id}`); // Log entry
-    // ... other validation ...
+    console.log(`[/api/drops/schedule-all POST] Start Handler. Shop: ${shop}, Collection GID: ${queued_collection_id}`);
+    
+    // --- Enhanced Input Validation for date and time ---
+    if (!start_date_string || !/\d{4}-\d{2}-\d{2}/.test(start_date_string)) {
+        console.error('[/api/drops/schedule-all POST] Invalid or missing start_date_string:', start_date_string);
+        return res.status(400).json({ error: 'Invalid or missing start date. Expected YYYY-MM-DD format.' });
+    }
+    if (!start_time_string || !/\d{2}:\d{2}/.test(start_time_string)) {
+        console.error('[/api/drops/schedule-all POST] Invalid or missing start_time_string:', start_time_string);
+        return res.status(400).json({ error: 'Invalid or missing start time. Expected HH:MM format.' });
+    }
+    if (isNaN(parseInt(duration_minutes, 10)) || parseInt(duration_minutes, 10) <= 0) {
+        console.error('[/api/drops/schedule-all POST] Invalid duration_minutes:', duration_minutes);
+        return res.status(400).json({ error: 'Invalid duration. Must be a positive number.' });
+    }
+    // --- End Enhanced Validation ---
+
     let initialStartTime;
     try {
-        // ... parse start time ...
-        initialStartTime = new Date(/*...*/);
-        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination.');
+        // --- CORRECTED: Parse start_date_string and start_time_string --- 
+        const dateTimeString = `${start_date_string}T${start_time_string}:00`; // Assuming seconds are :00
+        console.log(`[/api/drops/schedule-all POST] Constructed dateTimeString for parsing: ${dateTimeString}`);
+        initialStartTime = new Date(dateTimeString);
+        // --- END CORRECTION ---
+        
+        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination after parsing.');
     } catch (e) { 
         console.error('[/api/drops/schedule-all POST] Error parsing date/time', e);
         return res.status(400).json({ error: `Invalid start date/time: ${e.message}` });
