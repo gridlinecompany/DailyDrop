@@ -1141,7 +1141,41 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
             image: { src: node.featuredImage?.url || null } // Adapt to match REST structure expected later
         }));
         console.log(`[/api/drops/schedule-all POST] Step 4: Processed GraphQL response. Found ${shopifyProducts.length} products.`);
-        if (shopifyProducts.length === 0) { return res.status(200).json({ message: 'No active products found in the specified collection to schedule.', scheduled_count: 0 }); }
+        if (shopifyProducts.length === 0) { return res.status(200).json({ message: 'No products found in the specified collection to schedule.', scheduled_count: 0 }); } // MODIFIED message
+
+        // --- NEW Step 4.5: Filter products by active status via REST API ---
+        console.log(`[/api/drops/schedule-all POST] Step 4.5a: Filtering ${shopifyProducts.length} products by active status...`);
+        const activeShopifyProducts = [];
+        const restClient = new shopify.clients.Rest({ session }); // Create REST client once
+
+        for (const product of shopifyProducts) {
+            try {
+                const productIdNumeric = product.id.split('/').pop();
+                if (!productIdNumeric) {
+                    console.warn(`[/api/drops/schedule-all POST] Could not extract numeric ID from GID ${product.id}`);
+                    continue; // Skip if ID is invalid
+                }
+                // console.log(`[/api/drops/schedule-all POST] Checking status for product ID: ${productIdNumeric}`);
+                const productDetailsResponse = await restClient.get({
+                    path: `products/${productIdNumeric}`,
+                    query: { fields: 'id,status' } // Only fetch status
+                });
+
+                if (productDetailsResponse?.body?.product?.status === 'active') {
+                    activeShopifyProducts.push(product); 
+                } else {
+                    console.log(`[/api/drops/schedule-all POST] Product ${product.title} (ID: ${product.id}) is not active (status: ${productDetailsResponse?.body?.product?.status}). Skipping.`);
+                }
+            } catch (statusError) {
+                console.error(`[/api/drops/schedule-all POST] Error fetching status for product ${product.id}:`, statusError.message);
+                // Decide if you want to skip or include on error. Skipping is safer.
+            }
+        }
+        console.log(`[/api/drops/schedule-all POST] Step 4.5b: Found ${activeShopifyProducts.length} active products after filtering.`);
+        if (activeShopifyProducts.length === 0) { 
+            return res.status(200).json({ message: 'No ACTIVE products found in the specified collection to schedule.', scheduled_count: 0 }); 
+        }
+        // --- END NEW Step 4.5 ---
 
         // 5. Fetch Existing Queued Drops from Supabase
         console.log(`[/api/drops/schedule-all POST] Step 5a: Fetching existing queued drops from Supabase...`);
@@ -1158,8 +1192,8 @@ app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
         console.log(`[/api/drops/schedule-all POST] Step 5b: Fetched ${existingQueuedDrops.length} existing drops.`);
 
         // 6. Filter Products
-        const productsToSchedule = shopifyProducts.filter(p => !existingQueuedProductIds.has(p.id));
-        console.log(`[/api/drops/schedule-all POST] Step 6: Filtered products. ${productsToSchedule.length} need scheduling.`);
+        const productsToSchedule = activeShopifyProducts.filter(p => !existingQueuedProductIds.has(p.id)); // Use activeShopifyProducts
+        console.log(`[/api/drops/schedule-all POST] Step 6: Filtered products. ${productsToSchedule.length} active products need scheduling.`);
         if (productsToSchedule.length === 0) { return res.status(200).json({ message: 'All active products in the collection are already scheduled.', scheduled_count: 0 }); }
 
         // 7. Prepare Bulk Insert Data
