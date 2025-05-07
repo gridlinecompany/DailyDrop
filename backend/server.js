@@ -1050,34 +1050,35 @@ app.post('/api/drops', validateSession, async (req, res) => {
 
 // --- NEW: POST /api/drops/schedule-all - Bulk schedule drops from a collection ---
 app.post('/api/drops/schedule-all', validateSession, async (req, res) => {
-    // --- Input Validation ---
-    const { shop, queued_collection_id, start_date_string, start_time_string, duration_minutes } = req.body;
+    // --- MODIFIED: Expect initial_start_time_utc --- 
+    const { shop, queued_collection_id, initial_start_time_utc, duration_minutes } = req.body;
     console.log(`[/api/drops/schedule-all POST] Start Handler. Shop: ${shop}, Collection GID: ${queued_collection_id}`);
     
-    // --- Enhanced Input Validation for date and time ---
-    if (!start_date_string || !/\d{4}-\d{2}-\d{2}/.test(start_date_string)) {
-        console.error('[/api/drops/schedule-all POST] Invalid or missing start_date_string:', start_date_string);
-        return res.status(400).json({ error: 'Invalid or missing start date. Expected YYYY-MM-DD format.' });
+    // --- MODIFIED: Validate initial_start_time_utc and duration --- 
+    if (!initial_start_time_utc || typeof initial_start_time_utc !== 'string') {
+        console.error('[/api/drops/schedule-all POST] Invalid or missing initial_start_time_utc:', initial_start_time_utc);
+        return res.status(400).json({ error: 'Invalid or missing initial start time (UTC).' });
     }
-    if (!start_time_string || !/\d{2}:\d{2}/.test(start_time_string)) {
-        console.error('[/api/drops/schedule-all POST] Invalid or missing start_time_string:', start_time_string);
-        return res.status(400).json({ error: 'Invalid or missing start time. Expected HH:MM format.' });
+    // Basic ISO string check (can be more robust if needed)
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(initial_start_time_utc)) {
+        console.error('[/api/drops/schedule-all POST] Invalid initial_start_time_utc format:', initial_start_time_utc);
+        return res.status(400).json({ error: 'Invalid initial start time format. Expected UTC ISO string.' });
     }
-    if (isNaN(parseInt(duration_minutes, 10)) || parseInt(duration_minutes, 10) <= 0) {
+    const durationMinsInt = parseInt(duration_minutes, 10);
+    if (isNaN(durationMinsInt) || durationMinsInt <= 0) {
         console.error('[/api/drops/schedule-all POST] Invalid duration_minutes:', duration_minutes);
         return res.status(400).json({ error: 'Invalid duration. Must be a positive number.' });
     }
-    // --- End Enhanced Validation ---
+    // --- END MODIFIED VALIDATION ---
 
     let initialStartTime;
     try {
-        // --- CORRECTED: Parse start_date_string and start_time_string --- 
-        const dateTimeString = `${start_date_string}T${start_time_string}:00`; // Assuming seconds are :00
-        console.log(`[/api/drops/schedule-all POST] Constructed dateTimeString for parsing: ${dateTimeString}`);
-        initialStartTime = new Date(dateTimeString);
+        // --- CORRECTED: Parse initial_start_time_utc directly --- 
+        console.log(`[/api/drops/schedule-all POST] Parsing initial_start_time_utc: ${initial_start_time_utc}`);
+        initialStartTime = new Date(initial_start_time_utc);
         // --- END CORRECTION ---
         
-        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination after parsing.');
+        if (isNaN(initialStartTime.getTime())) throw new Error('Invalid date/time combination after parsing UTC string.');
     } catch (e) { 
         console.error('[/api/drops/schedule-all POST] Error parsing date/time', e);
         return res.status(400).json({ error: `Invalid start date/time: ${e.message}` });

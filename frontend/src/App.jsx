@@ -788,11 +788,25 @@ function App() {
 
     setIsBulkScheduling(true);
 
+    // --- MODIFIED: Convert selected date/time to UTC ISO string ---
+    let initialStartTimeUTC = null;
+    try {
+      const localDateTime = new Date(`${dropDateString}T${dropTime}:00`);
+      if (isNaN(localDateTime.getTime())) {
+        throw new Error('Invalid date or time selected.');
+      }
+      initialStartTimeUTC = localDateTime.toISOString();
+    } catch (e) {
+      showToast(`Error preparing start time: ${e.message}`, true);
+      setIsBulkScheduling(false);
+      return;
+    }
+    // --- END MODIFICATION ---
+
     const schedulePayload = {
         shop: shop,
         queued_collection_id: queuedCollection,
-        start_date_string: dropDateString,
-        start_time_string: dropTime,
+        initial_start_time_utc: initialStartTimeUTC,
         duration_minutes: durationMinutes
     };
 
