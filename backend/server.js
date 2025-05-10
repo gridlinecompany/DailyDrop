@@ -1985,8 +1985,8 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                     }
                 ];
 
-                // Add next_drop_time metafield if we have a next drop scheduled
-                if (nextDropTime) {
+                // Add next_drop_time metafield if we have a next drop scheduled AND it is a valid ISO8601 string
+                if (nextDropTime && !isNaN(Date.parse(nextDropTime))) {
                     metafieldsToSet.push({
                         key: "next_drop_time",
                         namespace: "midnight_drop",
@@ -1994,13 +1994,21 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                         type: "date_time",
                         value: nextDropTime
                     });
+                } else if (nextDropTime) {
+                    console.warn(`[Metafield Updater] Skipping next_drop_time metafield for ${shop} because value is not a valid ISO8601 string:`, nextDropTime);
                 }
+
+                // Log the mutation input
+                console.log(`[Metafield Updater] About to set metafields for ${shop}:`, JSON.stringify(metafieldsToSet, null, 2));
 
                 const variables = {
                     metafields: metafieldsToSet
                 };
 
                 const response = await client.query({ data: { query: mutation, variables } });
+                
+                // Log the full GraphQL response
+                console.log(`[Metafield Updater] Shopify GraphQL response:`, JSON.stringify(response.body, null, 2));
                 
                 // --- Check for errors and log the response ---
                 if (response.body?.data?.metafieldsSet?.userErrors?.length > 0) {
