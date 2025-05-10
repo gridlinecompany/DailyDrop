@@ -1974,19 +1974,26 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                     }
                 `; // <-- REMOVED extra backslash
                 
-                // Create array of metafields to set
-                const metafieldsToSet = [
-                    {
+                // Prepare metafields array
+                const metafieldsToSet = [];
+
+                // Always attempt to set active_drop_product_handle
+                if (typeof activeProductHandleValue === 'string') {
+                    console.log(`[Metafield Updater] Will set active_drop_product_handle:`, activeProductHandleValue);
+                    metafieldsToSet.push({
                         key: "active_drop_product_handle",
                         namespace: "custom",
-                        ownerId: currentShopGid, // Use cached/fetched Shop GID
+                        ownerId: currentShopGid,
                         type: "single_line_text_field",
-                        value: activeProductHandleValue // The new handle
-                    }
-                ];
+                        value: activeProductHandleValue
+                    });
+                } else {
+                    console.warn(`[Metafield Updater] No valid active product handle to set for shop ${shop}`);
+                }
 
-                // Add next_drop_time metafield if we have a next drop scheduled AND it is a valid ISO8601 string
+                // Only set next_drop_time if valid ISO8601
                 if (nextDropTime && !isNaN(Date.parse(nextDropTime))) {
+                    console.log(`[Metafield Updater] Will set next_drop_time:`, nextDropTime);
                     metafieldsToSet.push({
                         key: "next_drop_time",
                         namespace: "midnight_drop",
@@ -1996,6 +2003,11 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                     });
                 } else if (nextDropTime) {
                     console.warn(`[Metafield Updater] Skipping next_drop_time metafield for ${shop} because value is not a valid ISO8601 string:`, nextDropTime);
+                }
+
+                if (metafieldsToSet.length === 0) {
+                    console.warn(`[Metafield Updater] No metafields to set for shop ${shop}, skipping mutation.`);
+                    return;
                 }
 
                 // Log the mutation input
@@ -2021,9 +2033,10 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                             console.log(`[Metafield Updater] - Set ${metafield.namespace}.${metafield.key} = ${metafield.value}`);
                         });
                     }
-                    
                     // Update lastActiveProductHandleSet only for active product handle
-                    lastActiveProductHandleSet[shop] = activeProductHandleValue;
+                    if (typeof activeProductHandleValue === 'string') {
+                        lastActiveProductHandleSet[shop] = activeProductHandleValue;
+                    }
                 }
             } catch (updateError) {
                 console.error(`[Metafield Updater] Exception setting metafields for ${shop}:`, updateError);
