@@ -1771,33 +1771,35 @@ let lastMetafieldUpdateFailed = {}; // Structure: { shop: boolean }
 async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- ADD force update parameter
     // VALIDATE INPUTS
     if (!shop || !session || !session.accessToken) {
-        console.error(`[Metafield Updater] Invalid arguments: Shop='${shop}', Session Valid=${session && session.accessToken ? 'Yes' : 'No'}`);
+        console.error(`[Metafield Updater DEBUG] Invalid arguments: Shop='${shop}', Session Valid=${session && session.accessToken ? 'Yes' : 'No'}, AccessToken Exists: ${!!session?.accessToken}`);
         return; // Cannot proceed without shop and a valid session
     }
-    console.log(`[Metafield Updater] Running update for shop: ${shop}, forceUpdate=${forceUpdate}`);
+    console.log(`[Metafield Updater DEBUG] Running update for shop: ${shop}, forceUpdate=${forceUpdate}. Session ID: ${session.id}, Expires: ${session.expires}`);
 
     try {
         // --- Get Shop GID and Metafield Instance GID (use cache) ---
         let cachedData = shopMetafieldCache[shop];
         if (!cachedData || !cachedData.shopGid) {
-            console.log(`[Metafield Updater] Cache miss for shop ${shop}. Querying GIDs...`);
+            console.log(`[Metafield Updater DEBUG] Cache miss for shop ${shop}. Querying GIDs...`);
             try {
                 // Initialize GraphQL client using the passed session
                 const client = new shopify.clients.Graphql({ session });
+                console.log("[Metafield Updater DEBUG] GraphQL client initialized for GID fetching.");
 
                 // Query 1: Get Shop GID
                 const shopGidQuery = `{ shop { id } }`;
+                console.log("[Metafield Updater DEBUG] Querying Shop GID...");
                 const shopGidResponse = await client.query({ data: shopGidQuery });
                 const fetchedShopGid = shopGidResponse?.body?.data?.shop?.id;
+                console.log(`[Metafield Updater DEBUG] Shop GID Response: ${JSON.stringify(shopGidResponse?.body)}`);
 
                 if (!fetchedShopGid) {
-                    console.error(`[Metafield Updater] Failed to fetch Shop GID for ${shop}. Response:`, shopGidResponse?.body);
+                    console.error(`[Metafield Updater DEBUG] Failed to fetch Shop GID for ${shop}.`);
                     return; // Cannot proceed without Shop GID
                 }
-                console.log(`[Metafield Updater] Fetched Shop GID for ${shop}: ${fetchedShopGid}`);
+                console.log(`[Metafield Updater DEBUG] Fetched Shop GID for ${shop}: ${fetchedShopGid}`);
 
                 // Query 2: Find existing Metafield Instance GID
-                // REMOVE $ownerId variable declaration
                 const metafieldQuery = `
                   query GetShopMetafield { 
                     shop {
@@ -1808,91 +1810,85 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
                     }
                   }
                 `;
-                // Pass only the query string now
+                console.log("[Metafield Updater DEBUG] Querying existing metafield...");
                 const metafieldResponse = await client.query({ data: { query: metafieldQuery } }); 
+                console.log(`[Metafield Updater DEBUG] Existing Metafield Response: ${JSON.stringify(metafieldResponse?.body)}`);
                 const fetchedInstanceGid = metafieldResponse?.body?.data?.shop?.metafield?.id;
-                const initialValue = metafieldResponse?.body?.data?.shop?.metafield?.value; // Get current value too
+                const initialValue = metafieldResponse?.body?.data?.shop?.metafield?.value; 
 
                 if (fetchedInstanceGid) {
-                     console.log(`[Metafield Updater] Found existing metafield instance GID for ${shop}: ${fetchedInstanceGid}`);
-                     // Update cache
+                     console.log(`[Metafield Updater DEBUG] Found existing metafield instance GID for ${shop}: ${fetchedInstanceGid}, Value: ${initialValue}`);
                      shopMetafieldCache[shop] = { shopGid: fetchedShopGid, instanceGid: fetchedInstanceGid };
-                     // Initialize last set handle if not already set for this shop and metafield exists
                      if (lastActiveProductHandleSet[shop] === undefined) {
-                          lastActiveProductHandleSet[shop] = initialValue || null; // Use fetched value or null
-                          console.log(`[Metafield Updater] Initialized lastActiveProductHandleSet[${shop}] from existing metafield: ${lastActiveProductHandleSet[shop]}`);
+                          lastActiveProductHandleSet[shop] = initialValue || null; 
+                          console.log(`[Metafield Updater DEBUG] Initialized lastActiveProductHandleSet[${shop}] from existing metafield: ${lastActiveProductHandleSet[shop]}`);
                      }
-
                 } else {
-                     console.log(`[Metafield Updater] Metafield 'custom.active_drop_product_handle' not found for ${shop}. It might need to be created manually or by the first update.`);
-                     // Still cache the Shop GID, but mark instance GID as null/not found
+                     console.log(`[Metafield Updater DEBUG] Metafield 'custom.active_drop_product_handle' not found for ${shop}.`);
                      shopMetafieldCache[shop] = { shopGid: fetchedShopGid, instanceGid: null };
-                     // Initialize last set handle if not already set for this shop
                      if (lastActiveProductHandleSet[shop] === undefined) {
                           lastActiveProductHandleSet[shop] = null;
-                          console.log(`[Metafield Updater] Initialized lastActiveProductHandleSet[${shop}] to null (metafield not found).`);
+                          console.log(`[Metafield Updater DEBUG] Initialized lastActiveProductHandleSet[${shop}] to null (metafield not found).`);
                      }
                 }
-
-                cachedData = shopMetafieldCache[shop]; // Update local variable
-
+                cachedData = shopMetafieldCache[shop];
             } catch (error) {
-                console.error(`[Metafield Updater] Error during GID initialization for ${shop}:`, error);
-                return; // Stop processing if initialization fails
+                console.error(`[Metafield Updater DEBUG] Error during GID initialization for ${shop}:`, error.message, error.stack);
+                return; 
             }
         } else {
-             console.log(`[Metafield Updater] Using cached GIDs for ${shop}: ShopGID=${cachedData.shopGid}, InstanceGID=${cachedData.instanceGid}`);
+             console.log(`[Metafield Updater DEBUG] Using cached GIDs for ${shop}: ShopGID=${cachedData.shopGid}, InstanceGID=${cachedData.instanceGid}`);
         }
 
-        // Ensure we have the Shop GID before proceeding
         const currentShopGid = cachedData?.shopGid;
         if (!currentShopGid) {
-            console.error(`[Metafield Updater] Cannot proceed without Shop GID for ${shop}.`);
+            console.error(`[Metafield Updater DEBUG] Cannot proceed without Shop GID for ${shop}. Cache data: ${JSON.stringify(cachedData)}`);
             return;
         }
-        const currentMetafieldInstanceGid = cachedData?.instanceGid; // Might be null if not found/created yet
+        // const currentMetafieldInstanceGid = cachedData?.instanceGid; // Not directly used in mutation if creating
 
-        // Ensure last handle state is initialized for the shop
         if (lastActiveProductHandleSet[shop] === undefined) {
-            lastActiveProductHandleSet[shop] = null; // Default initialization
-            console.log(`[Metafield Updater] Initialized lastActiveProductHandleSet[${shop}] to null (default).`);
+            lastActiveProductHandleSet[shop] = null; 
+            console.log(`[Metafield Updater DEBUG] Initialized lastActiveProductHandleSet[${shop}] to null (default after cache check).`);
         }
-        // Get the last known handle (cached value)
         const currentLastSetHandle = lastActiveProductHandleSet[shop];
+        console.log(`[Metafield Updater DEBUG] Current last set handle for ${shop}: ${currentLastSetHandle}`);
 
         // Step 1: Query Supabase for the currently active product drop FOR THIS SHOP
         let activeProductGid = null;
+        console.log(`[Metafield Updater DEBUG] Querying Supabase for active drop for shop ${shop}...`);
         try {
             const { data: activeDrop, error: dbError } = await supabase
                 .from('drops')
-                .select('product_id')     // <-- CORRECT COLUMN
+                .select('product_id')
                 .eq('status', 'active')
                 .eq('shop', shop)
                 .maybeSingle(); 
 
             if (dbError) {
-                console.error(`[Metafield Updater] Supabase error querying active drop for ${shop}:`, dbError);
+                console.error(`[Metafield Updater DEBUG] Supabase error querying active drop for ${shop}:`, dbError);
                 return; 
             }
+            console.log(`[Metafield Updater DEBUG] Supabase active drop response for ${shop}: ${JSON.stringify(activeDrop)}`);
 
-            if (activeDrop && activeDrop.product_id) { // <-- Check product_id
-                activeProductGid = activeDrop.product_id; // <-- Store GID
-                console.log(`[Metafield Updater] Found active drop GID for ${shop}: ${activeProductGid}`);
+            if (activeDrop && activeDrop.product_id) { 
+                activeProductGid = activeDrop.product_id;
+                console.log(`[Metafield Updater DEBUG] Found active drop GID for ${shop}: ${activeProductGid}`);
             } else {
-                console.log(`[Metafield Updater] No active drop found for ${shop}.`);
+                console.log(`[Metafield Updater DEBUG] No active drop found in Supabase for ${shop}.`);
                 activeProductGid = null; 
             }
         } catch (error) {
-            console.error(`[Metafield Updater] Exception querying active drop for ${shop}:`, error);
+            console.error(`[Metafield Updater DEBUG] Exception querying Supabase active drop for ${shop}:`, error.message, error.stack);
             return;
         }
 
-        // --- Step 1.5: Fetch Product Handle if active GID exists --- 
         let activeProductHandleValue = null;
         if (activeProductGid) {
-            console.log(`[Metafield Updater] Fetching handle for active product GID: ${activeProductGid}`);
+            console.log(`[Metafield Updater DEBUG] Fetching handle for active product GID: ${activeProductGid}`);
             try {
                 const client = new shopify.clients.Graphql({ session });
+                console.log("[Metafield Updater DEBUG] GraphQL client initialized for handle fetching.");
                 const handleQuery = `
                     query getProductHandle($id: ID!) {
                         product(id: $id) {
@@ -1901,31 +1897,32 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
                     }
                 `;
                 const handleVariables = { id: activeProductGid };
+                console.log(`[Metafield Updater DEBUG] Querying product handle with GID: ${activeProductGid}`);
                 const handleResponse = await client.query({ data: { query: handleQuery, variables: handleVariables } });
+                console.log(`[Metafield Updater DEBUG] Product Handle Response: ${JSON.stringify(handleResponse?.body)}`);
                 const fetchedHandle = handleResponse?.body?.data?.product?.handle;
 
                 if (fetchedHandle) {
                     activeProductHandleValue = fetchedHandle;
-                    console.log(`[Metafield Updater] Successfully fetched handle: ${activeProductHandleValue}`);
+                    console.log(`[Metafield Updater DEBUG] Successfully fetched handle: ${activeProductHandleValue}`);
                 } else {
-                    console.error(`[Metafield Updater] Failed to fetch handle for GID ${activeProductGid}. Response:`, handleResponse?.body?.errors || handleResponse?.body);
-                    // Keep handle null if fetch fails, might indicate deleted product?
+                    console.error(`[Metafield Updater DEBUG] Failed to fetch handle for GID ${activeProductGid}.`);
                 }
             } catch (handleError) {
-                 console.error(`[Metafield Updater] Exception fetching handle for GID ${activeProductGid}:`, handleError);
-                 // Keep handle null on exception
+                 console.error(`[Metafield Updater DEBUG] Exception fetching handle for GID ${activeProductGid}:`, handleError.message, handleError.stack);
             }
+        } else {
+            console.log("[Metafield Updater DEBUG] No active product GID, so no handle to fetch.");
         }
-        // --- END Step 1.5 ---
-
-        // Step 2: Compare current active handle with the last known handle set
-        console.log(`[Metafield Updater] Comparing for ${shop}: Current Handle='${activeProductHandleValue}', Last Set Handle='${currentLastSetHandle}'`);
         
-        // Determine if update is needed - either force update is requested or the handle has changed
+        console.log(`[Metafield Updater DEBUG] Final activeProductHandleValue: '${activeProductHandleValue}'`);
+        console.log(`[Metafield Updater DEBUG] Comparing for ${shop}: Current Handle='${activeProductHandleValue}', Last Set Handle='${currentLastSetHandle}', ForceUpdate=${forceUpdate}`);
+        
         if (forceUpdate || activeProductHandleValue !== currentLastSetHandle) {
+            console.log("[Metafield Updater DEBUG] Condition met: Proceeding with metafield update.");
             try {
-                // Initialize GraphQL client using the passed session
                 const client = new shopify.clients.Graphql({ session });
+                console.log("[Metafield Updater DEBUG] GraphQL client initialized for metafield SET.");
 
                 const mutation = ` 
                     mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
@@ -1945,17 +1942,13 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
                     }
                 `; 
 
-                let metafieldValue;
-                
-                // Different handling based on whether we have an active product
+                let metafieldValueToSet;
                 if (activeProductHandleValue !== null) {
-                    // A new product is active, update the metafield
-                    console.log(`[Metafield Updater] ${forceUpdate ? "Force updating" : "Updating"} metafield to '${activeProductHandleValue}' for ${shop}`);
-                    metafieldValue = activeProductHandleValue;
+                    metafieldValueToSet = activeProductHandleValue;
+                    console.log(`[Metafield Updater DEBUG] ${forceUpdate ? "Force updating" : "Updating"} metafield to '${metafieldValueToSet}' for ${shop}`);
                 } else {
-                    // No active drop found, set an empty string
-                    console.log(`[Metafield Updater] ${forceUpdate ? "Force clearing" : "Clearing"} metafield for ${shop}.`);
-                    metafieldValue = "";
+                    metafieldValueToSet = ""; // Set to empty string if no active handle
+                    console.log(`[Metafield Updater DEBUG] ${forceUpdate ? "Force clearing" : "Clearing"} metafield (setting to empty string) for ${shop}.`);
                 }
                 
                 const variables = {
@@ -1965,56 +1958,55 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
                             namespace: "custom",
                             ownerId: currentShopGid, 
                             type: "single_line_text_field",
-                            value: metafieldValue
+                            value: metafieldValueToSet
                         }
                     ]
                 };
 
-                console.log(`[Metafield Updater] Calling metafieldsSet with value: ${metafieldValue}`);
+                console.log(`[Metafield Updater DEBUG] Calling metafieldsSet with variables: ${JSON.stringify(variables)}`);
                 const response = await client.query({ data: { query: mutation, variables } });
-                
-                // Handle errors
-                if (response?.body?.errors) {
-                    console.error(`[Metafield Updater] GraphQL Errors during metafield SET for ${shop}:`, JSON.stringify(response.body.errors, null, 2));
-                    lastMetafieldUpdateFailed[shop] = true;
-                    return;
-                }
+                console.log(`[Metafield Updater DEBUG] Metafield SET Response: ${JSON.stringify(response?.body, null, 2)}`);
                 
                 if (response?.body?.data?.metafieldsSet?.userErrors?.length > 0) {
-                    console.error(`[Metafield Updater] Shopify UserErrors during metafield SET for ${shop}:`, JSON.stringify(response.body.data.metafieldsSet.userErrors, null, 2));
+                    console.error(`[Metafield Updater DEBUG] UserErrors during metafield SET for ${shop}:`, JSON.stringify(response.body.data.metafieldsSet.userErrors, null, 2));
+                    lastMetafieldUpdateFailed[shop] = true;
+                    return; 
+                }
+                if (response?.body?.errors) {
+                    console.error(`[Metafield Updater DEBUG] GraphQL Errors during metafield SET for ${shop}:`, JSON.stringify(response.body.errors, null, 2));
                     lastMetafieldUpdateFailed[shop] = true;
                     return;
                 }
 
-                console.log(`[Metafield Updater] Successfully ${activeProductHandleValue !== null ? "SET" : "CLEARED"} metafield for ${shop}`);
-                // Update the cached value
-                lastActiveProductHandleSet[shop] = activeProductHandleValue;
-                // Reset failure flag
-                lastMetafieldUpdateFailed[shop] = false;
-                
-                // Cache the new/updated Instance GID
-                const updatedMetafield = response?.body?.data?.metafieldsSet?.metafields?.[0];
-                if (updatedMetafield && updatedMetafield.id && (!currentMetafieldInstanceGid || updatedMetafield.id !== currentMetafieldInstanceGid)) {
-                    console.log(`[Metafield Updater] Caching new/updated metafield instance GID for ${shop}: ${updatedMetafield.id}`);
-                    if (shopMetafieldCache[shop]) {
-                        shopMetafieldCache[shop].instanceGid = updatedMetafield.id;
-                    } else {
-                        // This case shouldn't happen if shopGid was fetched, but handle defensively
-                        shopMetafieldCache[shop] = { shopGid: currentShopGid, instanceGid: updatedMetafield.id };
+                if (response?.body?.data?.metafieldsSet?.metafields) {
+                    console.log(`[Metafield Updater DEBUG] Successfully SET metafield for ${shop}. New value: '${metafieldValueToSet}'`);
+                    lastActiveProductHandleSet[shop] = metafieldValueToSet; // Update cache with the value we just set
+                    lastMetafieldUpdateFailed[shop] = false;
+                    // Update shopMetafieldCache with new/confirmed instance GID if available
+                    const newInstanceGid = response.body.data.metafieldsSet.metafields[0]?.id;
+                    if (newInstanceGid && cachedData) {
+                        cachedData.instanceGid = newInstanceGid;
+                        console.log(`[Metafield Updater DEBUG] Updated/confirmed instance GID in cache: ${newInstanceGid}`);
                     }
+                } else {
+                    console.error(`[Metafield Updater DEBUG] Failed to SET metafield for ${shop}. No metafields returned in response, but no explicit errors either.`);
+                    lastMetafieldUpdateFailed[shop] = true; // Treat as failure
                 }
-            } catch (error) {
-                console.error(`[Metafield Updater] Exception during metafield SET for ${shop}:`, error);
-                console.error(`[Metafield Updater] Stack trace:`, error.stack);
+
+            } catch (mutationError) {
+                console.error(`[Metafield Updater DEBUG] Exception during metafield SET for ${shop}:`, mutationError.message, mutationError.stack);
+                if (mutationError.response && mutationError.response.errors) {
+                     console.error(`[Metafield Updater DEBUG] GraphQL error details from exception:`, JSON.stringify(mutationError.response.errors, null, 2));
+                }
                 lastMetafieldUpdateFailed[shop] = true;
             }
         } else {
-            console.log(`[Metafield Updater] No change in active drop handle ('${activeProductHandleValue}') for ${shop}. Metafield update skipped.`);
+            console.log(`[Metafield Updater DEBUG] Condition NOT met: No update needed for shop ${shop}. Handle '${activeProductHandleValue}' is same as last set '${currentLastSetHandle}' and forceUpdate is false.`);
+            lastMetafieldUpdateFailed[shop] = false; // Reset failure flag as no update was attempted
         }
-    } catch (outerError) {
-        console.error(`[Metafield Updater] Unexpected error in metafield update for ${shop}:`, outerError);
-        console.error(`[Metafield Updater] Stack trace:`, outerError.stack);
-        lastMetafieldUpdateFailed[shop] = true;
+    } catch (error) {
+        console.error(`[Metafield Updater DEBUG] UNHANDLED EXCEPTION in updateShopMetafield for ${shop}:`, error.message, error.stack);
+        lastMetafieldUpdateFailed[shop] = true; // Mark as failed if an unexpected error occurs
     }
 }
 
