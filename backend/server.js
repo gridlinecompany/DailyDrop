@@ -1917,34 +1917,35 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
     // (Rest of the function remains the same, using activeProductHandleValue)
     console.log(`[Metafield Updater] Comparing for ${shop}: Current Handle='${activeProductHandleValue}', Last Set Handle='${currentLastSetHandle}'`);
     if (activeProductHandleValue !== currentLastSetHandle) {
-        // ... existing logic to set metafield or do nothing ...
+        // A change in state was detected - could be a new handle or null
 
-        // --- Only update if a NEW handle is found ---
-        if (activeProductHandleValue !== null) {
-            // A new product is active, update the metafield
-            console.log(`[Metafield Updater] Active handle value changed to '${activeProductHandleValue}' for ${shop}. Updating metafield...`);
+        try {
+            // Initialize GraphQL client using the passed session
+            const client = new shopify.clients.Graphql({ session });
 
-            try {
-                // Initialize GraphQL client using the passed session
-                const client = new shopify.clients.Graphql({ session });
-
-                const mutation = ` 
-                    mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
-                      metafieldsSet(metafields: $metafields) {
-                        metafields {
-                          id
-                          key
-                          namespace
-                          value
-                          ownerType
-                        }
-                        userErrors {
-                          field
-                          message
-                        }
-                      }
+            const mutation = ` 
+                mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+                  metafieldsSet(metafields: $metafields) {
+                    metafields {
+                      id
+                      key
+                      namespace
+                      value
+                      ownerType
                     }
-                `; // <-- REMOVED extra backslash
+                    userErrors {
+                      field
+                      message
+                    }
+                  }
+                }
+            `; 
+
+            // Different handling based on whether we have an active product
+            if (activeProductHandleValue !== null) {
+                // A new product is active, update the metafield
+                console.log(`[Metafield Updater] Active handle value changed to '${activeProductHandleValue}' for ${shop}. Updating metafield...`);
+
                 const variables = {
                     metafields: [
                         {
@@ -1957,10 +1958,8 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                     ]
                 };
 
-                 // The mutation will now always rely on ownerId, namespace, key for upsert
-                 console.log(`[Metafield Updater] Calling metafieldsSet (will update/create based on owner/namespace/key)`);
-
-
+                // The mutation will now always rely on ownerId, namespace, key for upsert
+                console.log(`[Metafield Updater] Calling metafieldsSet to set new active product: ${activeProductHandleValue}`);
                 const response = await client.query({ data: { query: mutation, variables } });
 
                 // --- Check for GraphQL errors ---
@@ -1991,19 +1990,39 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                     }
                 }
                 // --- End Instance GID Caching ---
-
-            } catch (error) {
-                console.error(`[Metafield Updater] Exception during metafield SET for ${shop}:`, error);
-                // Consider checking error type (e.g., network, auth)
+            } else {
+                // No active drop found, BUT the state changed (it was previously non-null)
+                // We should explicitly set the metafield to null or empty string
+                console.log(`[Metafield Updater] No active drop found for ${shop}. Setting metafield to empty string.`);
+                
+                const variables = {
+                    metafields: [
+                        {
+                            key: "active_drop_product_handle",
+                            namespace: "custom",
+                            ownerId: currentShopGid,
+                            type: "single_line_text_field",
+                            value: "" // Empty string instead of null
+                        }
+                    ]
+                };
+                
+                console.log(`[Metafield Updater] Calling metafieldsSet to clear active product`);
+                const response = await client.query({ data: { query: mutation, variables } });
+                
+                // Check for errors
+                if (response?.body?.errors || response?.body?.data?.metafieldsSet?.userErrors?.length > 0) {
+                    console.error(`[Metafield Updater] Error clearing metafield for ${shop}:`, 
+                        response?.body?.errors || response?.body?.data?.metafieldsSet?.userErrors);
+                    return;
+                }
+                
+                console.log(`[Metafield Updater] Successfully cleared metafield for ${shop}`);
+                lastActiveProductHandleSet[shop] = null;
             }
-        } else {
-            // No active drop found, BUT the state changed (it was previously non-null)
-            // Keep the last product handle in the metafield (do nothing)
-            console.log(`[Metafield Updater] Active drop ended for ${shop}. Metafield will retain last active handle: '${currentLastSetHandle}'`);
-            // We technically should update our *local* last set handle state
-            lastActiveProductHandleSet[shop] = null;
-             console.log(`[Metafield Updater] Updated local lastActiveProductHandleSet[${shop}] to null.`);
-
+        } catch (error) {
+            console.error(`[Metafield Updater] Exception during metafield SET for ${shop}:`, error);
+            // Consider checking error type (e.g., network, auth)
         }
     } else {
         console.log(`[Metafield Updater] No change in active drop handle ('${activeProductHandleValue}') for ${shop}. Metafield update skipped.`);
@@ -2496,6 +2515,12 @@ async function activateDrop(shop, dropId) {
     // Also send scheduled drops update to reflect the change
     broadcastScheduledDrops(shop);
     
+    // Reset the metafield cache to force a fresh update
+    if (lastActiveProductHandleSet[shop] !== undefined) {
+      console.log(`[Status Monitor] Reset metafield cache for shop ${shop} to force update on new activation.`);
+      lastActiveProductHandleSet[shop] = null;
+    }
+    
     // Update shop metafield if session available
     try {
       const sessionStorage = shopify.config.sessionStorage;
@@ -2560,6 +2585,12 @@ async function completeActiveDrop(shop, dropId) {
     
     // Also send completed drops update to reflect the change
     broadcastCompletedDrops(shop);
+    
+    // Reset the metafield cache to force a fresh update
+    if (lastActiveProductHandleSet[shop] !== undefined) {
+      console.log(`[Status Monitor] Reset metafield cache for shop ${shop} to force update after completion.`);
+      lastActiveProductHandleSet[shop] = null;
+    }
     
     // Update shop metafield to clear the active product
     try {
