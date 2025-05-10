@@ -2505,16 +2505,16 @@ async function activateDrop(shop, dropId) {
     // Update shop metafield to clear the active product
     try {
       const offlineSessionId = shopify.session.getOfflineId(shop);
-      console.log(`[Status Monitor DEBUG] In completeActiveDrop: Attempting to load offline session ID: ${offlineSessionId} for shop ${shop}`);
+      console.log(`[Status Monitor DEBUG] In activateDrop: Attempting to load offline session ID: ${offlineSessionId} for shop ${shop}`); // MODIFIED LOG CONTEXT
       const offlineSession = await shopify.config.sessionStorage.loadSession(offlineSessionId);
       
       if (offlineSession && offlineSession.accessToken) {
-        console.log(`[Status Monitor DEBUG] In completeActiveDrop: Offline session loaded for ${shop}. AccessToken present: ${!!offlineSession.accessToken}. Triggering metafield update.`);
+        console.log(`[Status Monitor DEBUG] In activateDrop: Offline session loaded for ${shop}. AccessToken present: ${!!offlineSession.accessToken}. Triggering metafield update.`); // MODIFIED LOG CONTEXT
         updateShopMetafield(shop, offlineSession, true); // Force update
       } else {
         // Log the entire offlineSession object if it exists, otherwise just log that it's null/undefined
         const sessionDetailsForLog = offlineSession ? JSON.stringify(offlineSession) : String(offlineSession);
-        console.error(`[Status Monitor DEBUG] In completeActiveDrop: FAILED to load offline session or accessToken missing for shop ${shop}. Session Details: ${sessionDetailsForLog}`);
+        console.error(`[Status Monitor DEBUG] In activateDrop: FAILED to load offline session or accessToken missing for shop ${shop}. Session Details: ${sessionDetailsForLog}`); // MODIFIED LOG CONTEXT
       }
     } catch (metafieldError) {
       console.error(`[Status Monitor] Error updating metafield after drop activation:`, metafieldError);
