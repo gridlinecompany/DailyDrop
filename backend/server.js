@@ -1769,12 +1769,26 @@ let lastMetafieldUpdateFailed = {}; // Structure: { shop: boolean }
 // REFACTOR SIGNATURE
 // async function updateShopMetafield() {
 async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- ADD force update parameter
+    console.log(`
+
+
+!!!!!!!!!! [Metafield Updater DEBUG] STARTING UPDATE !!!!!!!!!
+Shop: ${shop}, ForceUpdate: ${forceUpdate}
+Session Object Present: ${!!session}
+Session ID: ${session?.id}
+Session AccessToken Present: ${!!session?.accessToken}
+Session Expires: ${session?.expires}
+!!!!!!!!!! [Metafield Updater DEBUG] STARTING UPDATE !!!!!!!!!
+
+
+`);
+
     // VALIDATE INPUTS
     if (!shop || !session || !session.accessToken) {
-        console.error(`[Metafield Updater DEBUG] Invalid arguments: Shop='${shop}', Session Valid=${session && session.accessToken ? 'Yes' : 'No'}, AccessToken Exists: ${!!session?.accessToken}`);
+        console.error(`[Metafield Updater DEBUG] CRITICAL VALIDATION FAILED: Shop='${shop}', Session Valid=${!!session}, AccessToken Valid=${!!session?.accessToken}`);
         return; // Cannot proceed without shop and a valid session
     }
-    console.log(`[Metafield Updater DEBUG] Running update for shop: ${shop}, forceUpdate=${forceUpdate}. Session ID: ${session.id}, Expires: ${session.expires}`);
+    // console.log(`[Metafield Updater DEBUG] Running update for shop: ${shop}, forceUpdate=${forceUpdate}. Session ID: ${session.id}, Expires: ${session.expires}`); // Covered by block above
 
     try {
         // --- Get Shop GID and Metafield Instance GID (use cache) ---
