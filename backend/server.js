@@ -233,8 +233,8 @@ app.get('/auth', async (req, res) => {
         res.cookie(OAUTH_STATE_COOKIE_NAME, state, {
             maxAge: 600000, // 10 minutes expiry
             httpOnly: true, // Prevent client-side JS access
-            secure: true,   // Send only over HTTPS
-            sameSite: 'None' // RESTORED: Required for cross-domain contexts
+            secure: process.env.NODE_ENV === 'production', // Secure in production only
+            sameSite: 'lax' // Changed from 'None' to 'lax' to work better across browsers
         });
         // --- End state cookie --- 
 
@@ -266,7 +266,11 @@ const validateOAuthState = (req, res, next) => {
 
     // Clear the state cookie (it's single-use) regardless of outcome
     console.log(`[/auth/callback] Clearing cookie: ${OAUTH_STATE_COOKIE_NAME}`);
-    res.clearCookie(OAUTH_STATE_COOKIE_NAME);
+    res.clearCookie(OAUTH_STATE_COOKIE_NAME, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax'
+    });
 
     if (!queryState || !stateCookie || queryState !== stateCookie) {
         console.error('[/auth/callback] OAuth state validation FAILED.', {
@@ -313,7 +317,11 @@ app.get(
     }
     
     // Ensure we clear the state cookie again just in case
-    res.clearCookie(OAUTH_STATE_COOKIE_NAME);
+    res.clearCookie(OAUTH_STATE_COOKIE_NAME, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax'
+    });
 
     if (!shop || !code) {
         console.error('[/auth/callback] Missing shop or code query parameter for token exchange.');
