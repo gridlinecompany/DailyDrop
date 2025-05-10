@@ -1913,6 +1913,34 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
     }
     // --- END Step 1.5 ---
 
+    // --- NEW Step 1.6: Find the next scheduled drop ---
+    let nextDropTime = null;
+    try {
+        console.log(`[Metafield Updater] Fetching next scheduled drop for ${shop}`);
+        const { data: nextDrop, error: nextDropError } = await supabase
+            .from('drops')
+            .select('start_time')
+            .eq('status', 'queued')
+            .eq('shop', shop)
+            .gt('start_time', new Date().toISOString()) // Only future drops
+            .order('start_time', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+        if (nextDropError) {
+            console.error(`[Metafield Updater] Supabase error querying next drop for ${shop}:`, nextDropError);
+        } else if (nextDrop && nextDrop.start_time) {
+            nextDropTime = nextDrop.start_time;
+            console.log(`[Metafield Updater] Found next scheduled drop time for ${shop}: ${nextDropTime}`);
+        } else {
+            console.log(`[Metafield Updater] No next scheduled drop found for ${shop}.`);
+        }
+    } catch (error) {
+        console.error(`[Metafield Updater] Exception querying next drop for ${shop}:`, error);
+        // Continue anyway since this is an additional feature
+    }
+    // --- END Step 1.6 ---
+
     // Step 2: Compare current active handle with the last known handle set...
     // (Rest of the function remains the same, using activeProductHandleValue)
     console.log(`[Metafield Updater] Comparing for ${shop}: Current Handle='${activeProductHandleValue}', Last Set Handle='${currentLastSetHandle}'`);
@@ -1945,68 +1973,173 @@ async function updateShopMetafield(shop, session) { // <-- ADD shop, session par
                       }
                     }
                 `; // <-- REMOVED extra backslash
+                
+                // Create array of metafields to set
+                const metafieldsToSet = [
+                    {
+                        key: "active_drop_product_handle",
+                        namespace: "custom",
+                        ownerId: currentShopGid, // Use cached/fetched Shop GID
+                        type: "single_line_text_field",
+                        value: activeProductHandleValue // The new handle
+                    }
+                ];
+
+                // Add next_drop_time metafield if we have a next drop scheduled
+                if (nextDropTime) {
+                    metafieldsToSet.push({
+                        key: "next_drop_time",
+                        namespace: "midnight_drop",
+                        ownerId: currentShopGid,
+                        type: "date_time",
+                        value: nextDropTime
+                    });
+                }
+
                 const variables = {
-                    metafields: [
-                        {
-                            key: "active_drop_product_handle",
-                            namespace: "custom",
-                            ownerId: currentShopGid, // Use cached/fetched Shop GID
-                            type: "single_line_text_field",
-                            value: activeProductHandleValue // The new handle
-                        }
-                    ]
+                    metafields: metafieldsToSet
                 };
 
-                 // The mutation will now always rely on ownerId, namespace, key for upsert
-                 console.log(`[Metafield Updater] Calling metafieldsSet (will update/create based on owner/namespace/key)`);
-
-
                 const response = await client.query({ data: { query: mutation, variables } });
-
-                // --- Check for GraphQL errors ---
-                if (response?.body?.errors) {
-                    console.error(`[Metafield Updater] GraphQL Errors during metafield SET for ${shop}:`, JSON.stringify(response.body.errors, null, 2));
-                    // Don't update lastActiveProductHandleSet on error
-                    return;
-                }
-                if (response?.body?.data?.metafieldsSet?.userErrors?.length > 0) {
-                    console.error(`[Metafield Updater] Shopify UserErrors during metafield SET for ${shop}:`, JSON.stringify(response.body.data.metafieldsSet.userErrors, null, 2));
-                    // Don't update lastActiveProductHandleSet on error
-                    return;
-                }
-                // --- End Error Check ---
-
-                console.log(`[Metafield Updater] Successfully SET metafield for ${shop} to handle: ${activeProductHandleValue}`);
-                lastActiveProductHandleSet[shop] = activeProductHandleValue; // Update the last known state FOR THIS SHOP
-
-                // --- Cache the new/updated Instance GID ---
-                const updatedMetafield = response?.body?.data?.metafieldsSet?.metafields?.[0];
-                if (updatedMetafield && updatedMetafield.id && (!currentMetafieldInstanceGid || updatedMetafield.id !== currentMetafieldInstanceGid)) {
-                    console.log(`[Metafield Updater] Caching new/updated metafield instance GID for ${shop}: ${updatedMetafield.id}`);
-                    if (shopMetafieldCache[shop]) {
-                        shopMetafieldCache[shop].instanceGid = updatedMetafield.id;
-                    } else {
-                        // This case shouldn't happen if shopGid was fetched, but handle defensively
-                         shopMetafieldCache[shop] = { shopGid: currentShopGid, instanceGid: updatedMetafield.id };
+                
+                // --- Check for errors and log the response ---
+                if (response.body?.data?.metafieldsSet?.userErrors?.length > 0) {
+                    console.error(`[Metafield Updater] Errors setting metafields for ${shop}:`, response.body.data.metafieldsSet.userErrors);
+                } else {
+                    console.log(`[Metafield Updater] Successfully set metafields for ${shop}.`);
+                    const setMetafields = response.body?.data?.metafieldsSet?.metafields;
+                    if (setMetafields) {
+                        setMetafields.forEach(metafield => {
+                            console.log(`[Metafield Updater] - Set ${metafield.namespace}.${metafield.key} = ${metafield.value}`);
+                        });
                     }
+                    
+                    // Update lastActiveProductHandleSet only for active product handle
+                    lastActiveProductHandleSet[shop] = activeProductHandleValue;
                 }
-                // --- End Instance GID Caching ---
-
-            } catch (error) {
-                console.error(`[Metafield Updater] Exception during metafield SET for ${shop}:`, error);
-                // Consider checking error type (e.g., network, auth)
+            } catch (updateError) {
+                console.error(`[Metafield Updater] Exception setting metafields for ${shop}:`, updateError);
             }
         } else {
-            // No active drop found, BUT the state changed (it was previously non-null)
-            // Keep the last product handle in the metafield (do nothing)
-            console.log(`[Metafield Updater] Active drop ended for ${shop}. Metafield will retain last active handle: '${currentLastSetHandle}'`);
-            // We technically should update our *local* last set handle state
-            lastActiveProductHandleSet[shop] = null;
-             console.log(`[Metafield Updater] Updated local lastActiveProductHandleSet[${shop}] to null.`);
+            // No product is active or we couldn't find handle, set metafield to null/blank (handle exists)
+            console.log(`[Metafield Updater] No active product for ${shop}. Clearing metafield if present...`);
 
+            try {
+                // Initialize GraphQL client using the passed session
+                const client = new shopify.clients.Graphql({ session });
+
+                // Only clear the active handle metafield, not the next drop time
+                const mutation = ` 
+                    mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+                      metafieldsSet(metafields: $metafields) {
+                        metafields {
+                          id
+                          key
+                          namespace
+                          value
+                          ownerType
+                        }
+                        userErrors {
+                          field
+                          message
+                        }
+                      }
+                    }
+                `;
+                
+                const metafieldsToSet = [{
+                    key: "active_drop_product_handle",
+                    namespace: "custom",
+                    ownerId: currentShopGid, // Use cached/fetched Shop GID
+                    type: "single_line_text_field",
+                    value: "" // Set to empty string as a deliberate clearing action
+                }];
+                
+                // Still update the next_drop_time metafield if we have a next drop
+                if (nextDropTime) {
+                    metafieldsToSet.push({
+                        key: "next_drop_time",
+                        namespace: "midnight_drop",
+                        ownerId: currentShopGid,
+                        type: "date_time",
+                        value: nextDropTime
+                    });
+                }
+                
+                const variables = {
+                    metafields: metafieldsToSet
+                };
+
+                const response = await client.query({ data: { query: mutation, variables } });
+                
+                // --- Check for errors and log the response ---
+                if (response.body?.data?.metafieldsSet?.userErrors?.length > 0) {
+                    console.error(`[Metafield Updater] Errors clearing metafields for ${shop}:`, response.body.data.metafieldsSet.userErrors);
+                } else {
+                    console.log(`[Metafield Updater] Successfully cleared active product metafield for ${shop}.`);
+                    const setMetafields = response.body?.data?.metafieldsSet?.metafields;
+                    if (setMetafields) {
+                        setMetafields.forEach(metafield => {
+                            console.log(`[Metafield Updater] - Set ${metafield.namespace}.${metafield.key} = ${metafield.value}`);
+                        });
+                    }
+                    
+                    // Update lastActiveProductHandleSet
+                    lastActiveProductHandleSet[shop] = null;
+                }
+            } catch (updateError) {
+                console.error(`[Metafield Updater] Exception clearing metafields for ${shop}:`, updateError);
+            }
         }
     } else {
-        console.log(`[Metafield Updater] No change in active drop handle ('${activeProductHandleValue}') for ${shop}. Metafield update skipped.`);
+        // Check if we need to update next_drop_time even if active product hasn't changed
+        if (nextDropTime) {
+            console.log(`[Metafield Updater] Active product hasn't changed, but updating next_drop_time metafield to ${nextDropTime}`);
+            
+            try {
+                const client = new shopify.clients.Graphql({ session });
+                
+                const mutation = ` 
+                    mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+                      metafieldsSet(metafields: $metafields) {
+                        metafields {
+                          id
+                          key
+                          namespace
+                          value
+                          ownerType
+                        }
+                        userErrors {
+                          field
+                          message
+                        }
+                      }
+                    }
+                `;
+                
+                const variables = {
+                    metafields: [{
+                        key: "next_drop_time",
+                        namespace: "midnight_drop",
+                        ownerId: currentShopGid,
+                        type: "date_time",
+                        value: nextDropTime
+                    }]
+                };
+                
+                const response = await client.query({ data: { query: mutation, variables } });
+                
+                if (response.body?.data?.metafieldsSet?.userErrors?.length > 0) {
+                    console.error(`[Metafield Updater] Errors setting next_drop_time for ${shop}:`, response.body.data.metafieldsSet.userErrors);
+                } else {
+                    console.log(`[Metafield Updater] Successfully updated next_drop_time metafield for ${shop} to ${nextDropTime}.`);
+                }
+            } catch (updateError) {
+                console.error(`[Metafield Updater] Exception setting next_drop_time for ${shop}:`, updateError);
+            }
+        } else {
+            console.log(`[Metafield Updater] No changes needed for ${shop}. Current handle: ${activeProductHandleValue}, No next scheduled drop.`);
+        }
     }
 }
 
