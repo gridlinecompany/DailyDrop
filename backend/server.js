@@ -2715,6 +2715,10 @@ async function completeActiveDrop(shop, dropId) {
       console.error(`[Status Monitor] Error updating metafield after drop completion:`, metafieldError);
     }
     
+    // Reset metafield cache so next activation triggers update
+    lastActiveProductHandleSet[shop] = null;
+    console.log(`[Status Monitor] Reset lastActiveProductHandleSet cache for shop ${shop} after completing drop.`);
+    
     return data;
   } catch (error) {
     console.error(`[Status Monitor] Error completing drop ${dropId} for shop ${shop}:`, error);
