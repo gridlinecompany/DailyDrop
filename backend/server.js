@@ -2531,7 +2531,7 @@ async function activateDrop(shop, dropId) {
       } else {
         console.log(`[Status Monitor DEBUG] No cached session available for shop ${shop}. Trying to find valid session...`);
         // Try loading all offline sessions for this shop
-        const sessions = await sessionStorage.findSessionsByShop(shop);
+        const sessions = await shopify.config.sessionStorage.findSessionsByShop(shop);
         
         // Find a non-expired session with an access token
         let session = null;
@@ -2627,7 +2627,7 @@ async function completeActiveDrop(shop, dropId) {
       } else {
         console.log(`[Status Monitor DEBUG] No cached session available for shop ${shop}. Trying to find valid session...`);
         // Try loading all offline sessions for this shop
-        const sessions = await sessionStorage.findSessionsByShop(shop);
+        const sessions = await shopify.config.sessionStorage.findSessionsByShop(shop);
         
         // Find a non-expired session with an access token
         let session = null;
