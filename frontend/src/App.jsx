@@ -273,75 +273,87 @@ function App() {
 
   // --- Authentication Effect ---
   useEffect(() => {
-    console.log('[App.jsx Base] Auth useEffect triggered.');
+    console.log('[App.jsx Base] Auth useEffect triggered. Current sessionToken:', sessionToken);
     const params = new URLSearchParams(window.location.search);
     const urlToken = params.get('token');
-    const shop = getShop();
+    const urlShop = params.get('shop') || getShop(); // Prefer URL shop, fallback to existing
 
-    if (!shop) {
-      console.log('[App.jsx Base] Shop parameter missing. Prompting user.');
-      setPromptForShop(true);
-      setIsLoading(false); // Stop loading to show the prompt
-      return; // Don't proceed further in this effect run
-    }
-
-    // If shop exists, ensure we are not prompting
-    setPromptForShop(false); 
-
-    if (urlToken) {
-      console.log('[App.jsx Base] Found token in URL.');
-      setSessionToken(urlToken);
-      params.delete('token');
-      window.history.replaceState({}, document.title, `${window.location.pathname}?${params.toString()}`);
-    } else if (!sessionToken) {
-      console.log('[App.jsx Base] No token found. Redirecting to auth.');
-      window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(shop)}`;
-      return;
-    }
-
-    const currentToken = sessionToken || urlToken;
-    if (!currentToken) {
-      console.error('[App.jsx Base] Token check inconsistency. Redirecting.');
-      window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(shop)}`;
-      return;
-    }
-
-    console.log('[App.jsx Base] Verifying session...');
-    const verificationHeaders = {
-      'Authorization': `Bearer ${currentToken}`,
-    };
-    console.log('[App.jsx Base] Token being sent:', currentToken);
-    console.log('[App.jsx Base] Headers being sent:', verificationHeaders);
-    fetch(`${backendBaseUrl}/api/shopify/verify-session?shop=${encodeURIComponent(shop)}`, {
-      headers: verificationHeaders,
-    })
-      .then(response => {
-        console.log('[App.jsx Base] Verification response status:', response.status);
-        if (response.ok) {
-          setIsAuthenticated(true);
-          setSessionToken(currentToken);
-          console.log('[App.jsx Base] Session verified.');
-          
-          // Set loading state to true but let the WebSocket handle completing it
-          setIsLoading(true);
-
-          // We'll initialize the WebSocket and let it handle all data loading instead of HTTP fetches
-        } else {
-          setIsAuthenticated(false);
-          console.error('[App.jsx Base] Session verification failed. Status:', response.status);
-          setSessionToken(null);
-          window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(shop)}`;
-          setIsLoading(false);
-        }
-      })
-      .catch((error) => {
-        console.error('[App.jsx Base] Error during verification fetch:', error);
-        setIsAuthenticated(false);
-        setSessionToken(null);
+    if (!urlShop) { // If no shop context at all (neither in URL nor from getShop())
+        console.log('[App.jsx Base] Shop parameter absolutely missing. Prompting user.');
+        setPromptForShop(true);
         setIsLoading(false);
-      });
+        return;
+    }
+    setPromptForShop(false);
 
-  }, [sessionToken, getShop, showToast]);
+    // Scenario 1: Token in URL (fresh from OAuth)
+    if (urlToken && urlShop) {
+        console.log('[App.jsx Base] Token and shop found in URL. Processing...');
+        localStorage.setItem('sessionToken', urlToken);
+        localStorage.setItem('shopDomain', urlShop);   // Persist shop
+        setSessionToken(urlToken);
+        // setShopDomain(urlShop); // Assuming getShop() will reflect this or it's set elsewhere if needed as React state
+        
+        // Clean URL params
+        const newParams = new URLSearchParams(location.search);
+        newParams.delete('token');
+        navigate(`${location.pathname}?${newParams.toString()}`, { replace: true });
+
+        setIsLoading(true); 
+        return; 
+    }
+
+    // Scenario 2: Token exists in state (either from URL previously, or from localStorage)
+    // And we haven't successfully authenticated yet
+    if (sessionToken && urlShop && !isAuthenticated) {
+        console.log(`[App.jsx Base] Verifying existing sessionToken for shop: ${urlShop}`);
+        setIsLoading(true); 
+        fetch(`${backendBaseUrl}/api/shopify/verify-session?shop=${encodeURIComponent(urlShop)}`, {
+            headers: { 'Authorization': `Bearer ${sessionToken}` },
+        })
+        .then(response => {
+            console.log('[App.jsx Base] Verification response status:', response.status);
+            if (response.ok) {
+                setIsAuthenticated(true);
+                console.log('[App.jsx Base] Session verified successfully.');
+            } else {
+                console.error('[App.jsx Base] Session verification failed. Status:', response.status);
+                localStorage.removeItem('sessionToken');
+                localStorage.removeItem('shopDomain');
+                setSessionToken(null);
+                // setShopDomain(null); // Clear shop domain state if you have one
+                setIsAuthenticated(false);
+                window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(urlShop)}`;
+            }
+        })
+        .catch((error) => {
+            console.error('[App.jsx Base] Error during verification fetch:', error);
+            localStorage.removeItem('sessionToken');
+            localStorage.removeItem('shopDomain');
+            setSessionToken(null);
+            // setShopDomain(null);
+            setIsAuthenticated(false);
+        })
+        .finally(() => {
+            setIsLoading(false);
+        });
+        return; 
+    }
+
+    // Scenario 3: No token in URL, no token in state (e.g., first visit, or after failed auth & cleared token)
+    if (!urlToken && !sessionToken && urlShop && !isLoading) { // Added !isLoading to prevent redirect while verifying
+        console.log('[App.jsx Base] No token available. Redirecting to auth for shop:', urlShop);
+        setIsLoading(false); 
+        window.location.href = `${backendBaseUrl}/auth?shop=${encodeURIComponent(urlShop)}`;
+        return;
+    }
+    
+    // If we have a token and are authenticated, or if no shop, ensure loading is false.
+    if ((sessionToken && isAuthenticated) || !urlShop) {
+        setIsLoading(false);
+    }
+
+}, [sessionToken, location.search, getShop, showToast, navigate, isAuthenticated, backendBaseUrl, setIsLoading, setIsAuthenticated, setSessionToken]); // Added missing dependencies
 
   // --- WebSocket Connection Effect ---
   useEffect(() => {

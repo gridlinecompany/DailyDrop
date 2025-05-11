@@ -16,20 +16,23 @@ export function initializeStatusMonitor(io, broadcastFunctions) {
 
 // Main function to start monitoring for a specific shop
 export function startStatusMonitoring(shop) {
-    if (statusMonitoringIntervals[shop]) {
-        console.log(`[StatusMonitor] Monitoring already active for shop ${shop}`);
+    if (!shop) {
+        console.warn('[StatusMonitor] Attempted to start monitoring for undefined shop.');
         return;
     }
-    console.log(`[StatusMonitor] Starting monitor for shop ${shop}`);
-    // Initial check shortly after start
+    if (statusMonitoringIntervals[shop]) {
+        console.log(`[StatusMonitor START] Monitoring already active for shop: ${shop}. Interval ID: ${statusMonitoringIntervals[shop]}`);
+        return;
+    }
+    console.log(`[StatusMonitor START] Starting new monitor for shop: ${shop}`);
     setTimeout(() => {
-        console.log(`[StatusMonitor] Running initial status check for shop ${shop}`);
+        console.log(`[StatusMonitor RUN] Initial status check for shop: ${shop}`);
         checkAndActivateScheduledDrops(shop);
         checkAndCompleteActiveDrops(shop);
-    }, 500); // 500ms delay
+    }, 500);
 
-    statusMonitoringIntervals[shop] = setInterval(async () => {
-        // console.log(`[StatusMonitor] Running periodic check for shop ${shop}`);
+    const intervalId = setInterval(async () => {
+        // console.log(`[StatusMonitor RUN] Periodic check for shop: ${shop}`);
         await checkAndActivateScheduledDrops(shop);
         await checkAndCompleteActiveDrops(shop);
         // Consider if broadcastRefreshInstruction should be here or handled by specific change events
@@ -40,20 +43,30 @@ export function startStatusMonitoring(shop) {
                 // console.warn('[StatusMonitor] broadcastRefreshInstruction not available in shared functions.');
              }
         }
-    }, 10000); // Check every 10 seconds
+    }, 10000); 
+    statusMonitoringIntervals[shop] = intervalId;
+    console.log(`[StatusMonitor START] Monitor started for shop: ${shop}. New Interval ID: ${intervalId}`);
 }
 
 // Main function to stop monitoring for a specific shop
 export function stopStatusMonitoring(shop) {
+    if (!shop) {
+        console.warn('[StatusMonitor] Attempted to stop monitoring for undefined shop.');
+        return;
+    }
     if (statusMonitoringIntervals[shop]) {
-        console.log(`[StatusMonitor] Stopping monitor for shop ${shop}`);
+        console.log(`[StatusMonitor STOP] Stopping monitor for shop: ${shop}. Interval ID: ${statusMonitoringIntervals[shop]}`);
         clearInterval(statusMonitoringIntervals[shop]);
         delete statusMonitoringIntervals[shop];
+        console.log(`[StatusMonitor STOP] Monitor stopped and interval cleared for shop: ${shop}`);
+    } else {
+        console.log(`[StatusMonitor STOP] No active monitor found to stop for shop: ${shop}`);
     }
 }
 
 async function checkAndActivateScheduledDrops(shop) {
-    // console.log(`[StatusMonitor DEBUG] Checking to activate scheduled drops for ${shop} at ${new Date().toISOString()}`);
+    // Add a clear log at the start of this function if not already present
+    console.log(`[StatusMonitor CheckActivate] Shop: ${shop} at ${new Date().toISOString()}`);
     try {
         const now = new Date();
         const { data: dropsToPotentiallyActivate, error: queryError } = await supabase
@@ -61,11 +74,11 @@ async function checkAndActivateScheduledDrops(shop) {
             .select('*')
             .eq('shop', shop)
             .eq('status', 'queued')
-            .lte('start_time', now.toISOString()) // Drops whose start time is now or in the past
+            .lte('start_time', now.toISOString())
             .order('start_time', { ascending: true });
 
         if (queryError) {
-            console.error(`[StatusMonitor] Error querying queued drops for shop ${shop}:`, queryError.message);
+            console.error(`[StatusMonitor CheckActivate] Error querying queued for ${shop}:`, queryError.message);
             return;
         }
 
@@ -94,12 +107,12 @@ async function checkAndActivateScheduledDrops(shop) {
             await activateDrop(shop, dropToActivate.id);
         }
     } catch (error) {
-        console.error(`[StatusMonitor] Error in checkAndActivateScheduledDrops for shop ${shop}:`, error.message, error.stack);
+        console.error(`[StatusMonitor CheckActivate] Uncaught error for ${shop}:`, error.message, error.stack);
     }
 }
 
 async function checkAndCompleteActiveDrops(shop) {
-    // console.log(`[StatusMonitor DEBUG] Checking to complete active drops for ${shop} at ${new Date().toISOString()}`);
+    console.log(`[StatusMonitor CheckComplete] Shop: ${shop} at ${new Date().toISOString()}`);
     try {
         const now = new Date();
         const { data: activeDrops, error: queryError } = await supabase
@@ -110,7 +123,7 @@ async function checkAndCompleteActiveDrops(shop) {
             .lte('end_time', now.toISOString()); // Drops whose end_time is now or in the past
 
         if (queryError) {
-            console.error(`[StatusMonitor] Error querying active drops to complete for ${shop}:`, queryError.message);
+            console.error(`[StatusMonitor CheckComplete] Error querying active for ${shop}:`, queryError.message);
             return;
         }
 
@@ -122,7 +135,7 @@ async function checkAndCompleteActiveDrops(shop) {
             }
         }
     } catch (error) {
-        console.error(`[StatusMonitor] Error in checkAndCompleteActiveDrops for shop ${shop}:`, error.message, error.stack);
+        console.error(`[StatusMonitor CheckComplete] Uncaught error for ${shop}:`, error.message, error.stack);
     }
 }
 

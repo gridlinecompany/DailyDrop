@@ -53,24 +53,26 @@ export function initializeSocketManager(io) {
     ioInstance.on('connection', (socket) => {
         const shop = socket.shop; // Relies on shop being attached by the auth middleware
         if (!shop) {
-            console.error('[SocketManager Connection] Shop not found on socket after auth attempt, disconnecting.');
+            console.error('[SocketManager Connection] CRITICAL: Shop not found on socket after auth middleware. Disconnecting socket.');
             socket.disconnect(true);
             return;
         }
 
-        console.log(`[SocketManager] Client connected for shop: ${shop}`);
+        console.log(`[SocketManager Connection] Client connected. Shop: ${shop}, Socket ID: ${socket.id}`);
         socket.join(shop);
-
-        socket.on('join_shop_room', () => {
-            socket.join(shop);
-            console.log(`[SocketManager] Client explicitly re-joined room for shop: ${shop}`);
-        });
+        console.log(`[SocketManager Connection] Socket ${socket.id} joined room for shop: ${shop}`);
 
         const heartbeatInterval = setInterval(() => {
             socket.emit('heartbeat', { timestamp: new Date().toISOString() });
         }, 60000);
 
-        if (shop) startStatusMonitoring(shop); // Uses imported function
+        console.log(`[SocketManager Connection] Attempting to start status monitoring for shop: ${shop} due to new connection.`);
+        startStatusMonitoring(shop); // Uses imported function
+
+        socket.on('join_shop_room', () => {
+            socket.join(shop);
+            console.log(`[SocketManager] Client explicitly re-joined room for shop: ${shop}`);
+        });
 
         socket.on('ping_server', (callback) => {
             if (typeof callback === 'function') {
@@ -81,14 +83,17 @@ export function initializeSocketManager(io) {
         });
 
         socket.on('disconnect', () => {
-            console.log(`[SocketManager] Client disconnected for shop: ${shop}`);
-            clearInterval(heartbeatInterval);
+            console.log(`[SocketManager Disconnect] Client disconnected. Shop: ${shop}, Socket ID: ${socket.id}`);
+            // clearInterval(heartbeatInterval); // Already done in your original code
             const room = ioInstance.sockets.adapter.rooms.get(shop);
-            if (!room || room.size === 0) {
-                console.log(`[SocketManager] Last client disconnected for shop ${shop}.`);
-                if (shop) stopStatusMonitoring(shop); // Uses imported function
+            const currentRoomSize = room ? room.size : 0;
+            console.log(`[SocketManager Disconnect] Room size for shop ${shop} before stopping check: ${currentRoomSize}`);
+
+            if (currentRoomSize === 0) { // Check if this socket was the last one
+                console.log(`[SocketManager Disconnect] Last client for shop ${shop} (Socket ID: ${socket.id}) disconnected. Attempting to stop monitor.`);
+                if (shop) stopStatusMonitoring(shop); 
             } else {
-                console.log(`[SocketManager] ${room.size} clients still connected for shop ${shop}. Monitoring continues.`);
+                console.log(`[SocketManager Disconnect] ${currentRoomSize} clients still in room for shop ${shop}. Monitoring continues.`);
             }
         });
 
