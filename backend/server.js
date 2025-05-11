@@ -2389,22 +2389,25 @@ async function checkAndActivateScheduledDrops(shop) {
     const now = new Date();
     console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`);
     
-    // MODIFIED QUERY: Temporarily remove the start_time < now condition
-    console.log(`[checkAndActivateScheduledDrops DEBUG] RUNNING MODIFIED QUERY (ignoring start_time)`); // <-- ADD THIS LOG
+    // Add a buffer to the current time to be more generous with activation
+    const timeBuffer = new Date(now.getTime() + 5 * 60000); // Current time plus 5 minutes
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Using buffered time for query: ${timeBuffer.toISOString()}`);
+    
+    // Find scheduled drops that should be active based on start_time
     const { data: dropsToActivate, error } = await supabase
       .from('drops')
       .select('*')
       .eq('shop', shop)
       .eq('status', 'queued')
-      // .lt('start_time', now.toISOString()) // <-- TEMPORARILY COMMENTED OUT
+      .lt('start_time', timeBuffer.toISOString()) // Using a more generous time window
       .order('start_time', { ascending: true });
     
     // Log the raw result of the query
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query (MODIFIED) for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2)); // Log MODIFIED query result
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2));
     
     if (error) {
-        console.error(`[checkAndActivateScheduledDrops DEBUG] Supabase error directly from query:`, error);
-        throw error; 
+      console.error(`[Status Monitor] Error checking for drops to activate:`, error);
+      return;
     }
     
     if (dropsToActivate && dropsToActivate.length > 0) {
@@ -2463,10 +2466,10 @@ async function checkAndCompleteActiveDrops(shop) {
 
 // Activate a drop by ID
 async function activateDrop(shop, dropId) {
-  console.log(`!!!!!!!!!! ATTEMPTING TO ACTIVATE DROP ${dropId} FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`); // <-- ADD THIS LOG
+  console.log(`!!!!!!!!!! ATTEMPTING TO ACTIVATE DROP ${dropId} FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`);
   try {
     console.log(`[Status Monitor] Attempting to activate drop ${dropId} for shop ${shop}`);
-    
+
     // Update drop status to active
     const { data, error } = await supabase
       .from('drops')
@@ -2475,7 +2478,7 @@ async function activateDrop(shop, dropId) {
       .eq('shop', shop)
       .select()
       .single();
-    
+
     if (error) throw error;
     
     console.log(`[Status Monitor] Successfully activated drop ${dropId} for shop ${shop}`);
@@ -2512,19 +2515,32 @@ async function activateDrop(shop, dropId) {
       lastActiveProductHandleSet[shop] = null;
     }
     
-    // Update shop metafield to clear the active product
+    // Update shop metafield to set the active product
     try {
-      const offlineSessionId = shopify.session.getOfflineId(shop);
-      console.log(`[Status Monitor DEBUG] In activateDrop: Attempting to load offline session ID: ${offlineSessionId} for shop ${shop}`); // MODIFIED LOG CONTEXT
-      const offlineSession = await shopify.config.sessionStorage.loadSession(offlineSessionId);
+      // FIXED SESSION LOADING: Using custom session loading strategy
+      console.log(`[Status Monitor DEBUG] In activateDrop: Attempting to find valid session for shop ${shop}`);
       
-      if (offlineSession && offlineSession.accessToken) {
-        console.log(`[Status Monitor DEBUG] In activateDrop: Offline session loaded for ${shop}. AccessToken present: ${!!offlineSession.accessToken}. Triggering metafield update.`); // MODIFIED LOG CONTEXT
-        updateShopMetafield(shop, offlineSession, true); // Force update
+      // Try loading all offline sessions for this shop
+      const sessions = await sessionStorage.findSessionsByShop(shop);
+      
+      // Find a non-expired session with an access token
+      let session = null;
+      if (sessions && sessions.length > 0) {
+        console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
+        for (const s of sessions) {
+          if (s.accessToken && !s.isOnline) {
+            session = s;
+            console.log(`[Status Monitor DEBUG] In activateDrop: Found valid offline session with ID: ${session.id}`);
+            break;
+          }
+        }
+      }
+      
+      if (session && session.accessToken) {
+        console.log(`[Status Monitor DEBUG] In activateDrop: Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
+        updateShopMetafield(shop, session, true); // Force update
       } else {
-        // Log the entire offlineSession object if it exists, otherwise just log that it's null/undefined
-        const sessionDetailsForLog = offlineSession ? JSON.stringify(offlineSession) : String(offlineSession);
-        console.error(`[Status Monitor DEBUG] In activateDrop: FAILED to load offline session or accessToken missing for shop ${shop}. Session Details: ${sessionDetailsForLog}`); // MODIFIED LOG CONTEXT
+        console.error(`[Status Monitor DEBUG] In activateDrop: FAILED to find any valid offline session for shop ${shop}. Available sessions: ${JSON.stringify(sessions)}`);
       }
     } catch (metafieldError) {
       console.error(`[Status Monitor] Error updating metafield after drop activation:`, metafieldError);
@@ -2541,7 +2557,7 @@ async function activateDrop(shop, dropId) {
 async function completeActiveDrop(shop, dropId) {
   try {
     console.log(`[Status Monitor] Attempting to complete drop ${dropId} for shop ${shop}`);
-    
+
     // Update drop status to completed
     const { data, error } = await supabase
       .from('drops')
@@ -2551,7 +2567,7 @@ async function completeActiveDrop(shop, dropId) {
       .eq('status', 'active')
       .select()
       .single();
-    
+
     if (error) throw error;
     
     console.log(`[Status Monitor] Successfully completed drop ${dropId} for shop ${shop}`);
@@ -2590,17 +2606,30 @@ async function completeActiveDrop(shop, dropId) {
     
     // Update shop metafield to clear the active product
     try {
-      const offlineSessionId = shopify.session.getOfflineId(shop);
-      console.log(`[Status Monitor DEBUG] In completeActiveDrop: Attempting to load offline session ID: ${offlineSessionId} for shop ${shop}`);
-      const offlineSession = await shopify.config.sessionStorage.loadSession(offlineSessionId);
+      // FIXED SESSION LOADING: Using custom session loading strategy
+      console.log(`[Status Monitor DEBUG] In completeActiveDrop: Attempting to find valid session for shop ${shop}`);
       
-      if (offlineSession && offlineSession.accessToken) {
-        console.log(`[Status Monitor DEBUG] In completeActiveDrop: Offline session loaded for ${shop}. AccessToken present: ${!!offlineSession.accessToken}. Triggering metafield update.`);
-        updateShopMetafield(shop, offlineSession, true); // Force update
+      // Try loading all offline sessions for this shop
+      const sessions = await sessionStorage.findSessionsByShop(shop);
+      
+      // Find a non-expired session with an access token
+      let session = null;
+      if (sessions && sessions.length > 0) {
+        console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
+        for (const s of sessions) {
+          if (s.accessToken && !s.isOnline) {
+            session = s;
+            console.log(`[Status Monitor DEBUG] In completeActiveDrop: Found valid offline session with ID: ${session.id}`);
+            break;
+          }
+        }
+      }
+      
+      if (session && session.accessToken) {
+        console.log(`[Status Monitor DEBUG] In completeActiveDrop: Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
+        updateShopMetafield(shop, session, true); // Force update
       } else {
-        // Log the entire offlineSession object if it exists, otherwise just log that it's null/undefined
-        const sessionDetailsForLog = offlineSession ? JSON.stringify(offlineSession) : String(offlineSession);
-        console.error(`[Status Monitor DEBUG] In completeActiveDrop: FAILED to load offline session or accessToken missing for shop ${shop}. Session Details: ${sessionDetailsForLog}`);
+        console.error(`[Status Monitor DEBUG] In completeActiveDrop: FAILED to find any valid offline session for shop ${shop}. Available sessions: ${JSON.stringify(sessions)}`);
       }
     } catch (metafieldError) {
       console.error(`[Status Monitor] Error updating metafield after drop completion:`, metafieldError);
