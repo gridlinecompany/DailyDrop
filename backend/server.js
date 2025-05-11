@@ -1774,13 +1774,7 @@ let lastMetafieldUpdateFailed = {}; // Structure: { shop: boolean }
 // Function to check Supabase for active product and update Shopify shop metafield
 // REFACTOR SIGNATURE
 // async function updateShopMetafield() {
-async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- ADD force update parameter
-    // VALIDATE INPUTS
-    if (!shop || !session || !session.accessToken) {
-        console.error(`[Metafield Updater DEBUG] Invalid arguments: Shop='${shop}', Session Valid=${session && session.accessToken ? 'Yes' : 'No'}, AccessToken Exists: ${!!session?.accessToken}`);
-        return; // Cannot proceed without shop and a valid session
-    }
-    console.log(`[Metafield Updater DEBUG] Running update for shop: ${shop}, forceUpdate=${forceUpdate}. Session ID: ${session.id}, Expires: ${session.expires}`);
+async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- ADD force update parameter    // VALIDATE INPUTS    if (!shop || !session || !session.accessToken) {        console.error(`[METAFIELD UPDATE ERROR] Invalid arguments: Shop='${shop}', Session Valid=${session && session.accessToken ? 'Yes' : 'No'}, AccessToken Exists: ${!!session?.accessToken}`);        return; // Cannot proceed without shop and a valid session    }    console.log(`[METAFIELD UPDATE] Running update for shop: ${shop}, forceUpdate=${forceUpdate}. Session ID: ${session.id}, Expires: ${session.expires}`);
 
     try {
         // --- Get Shop GID and Metafield Instance GID (use cache) ---
@@ -2606,49 +2600,7 @@ async function activateDrop(shop, dropId) {
       lastActiveProductHandleSet[shop] = null;
     }
     
-    // Update shop metafield to set the active product
-    try {
-      console.log(`[METAFIELD UPDATE TRACE] ======= STARTING METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======`);
-      // NEW VERSION: Use stored session from global cache
-      if (validShopSessions[shop] && validShopSessions[shop].accessToken) {
-        const cachedSession = validShopSessions[shop];
-        console.log(`[METAFIELD UPDATE TRACE] Using cached session for ${shop}. AccessToken present: ${!!cachedSession.accessToken}. Session ID: ${cachedSession.id}`);
-        console.log(`[METAFIELD UPDATE TRACE] About to call updateShopMetafield with forceUpdate=true`);
-        await updateShopMetafield(shop, cachedSession, true); // Force update
-        console.log(`[METAFIELD UPDATE TRACE] updateShopMetafield call completed for ${shop}`);
-      } else {
-        console.log(`[METAFIELD UPDATE TRACE] No cached session available for shop ${shop}. Trying to find valid session...`);
-        // Try loading all offline sessions for this shop
-        const sessions = await shopify.config.sessionStorage.findSessionsByShop(shop);
-        
-        // Find a non-expired session with an access token
-        let session = null;
-        if (sessions && sessions.length > 0) {
-          console.log(`[METAFIELD UPDATE TRACE] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
-          for (const s of sessions) {
-            if (s.accessToken && !s.isOnline) {
-              session = s;
-              // Store the session for future use
-              validShopSessions[shop] = s;
-              console.log(`[METAFIELD UPDATE TRACE] Found and cached valid offline session with ID: ${session.id}`);
-              break;
-            }
-          }
-        }
-        
-        if (session && session.accessToken) {
-          console.log(`[METAFIELD UPDATE TRACE] Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
-          console.log(`[METAFIELD UPDATE TRACE] About to call updateShopMetafield with forceUpdate=true`);
-          await updateShopMetafield(shop, session, true); // Force update
-          console.log(`[METAFIELD UPDATE TRACE] updateShopMetafield call completed for ${shop}`);
-        } else {
-          console.error(`[METAFIELD UPDATE TRACE] FAILED to find any valid offline session for shop ${shop}.`);
-        }
-      }
-      console.log(`[METAFIELD UPDATE TRACE] ======= FINISHED METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======`);
-    } catch (metafieldError) {
-      console.error(`[METAFIELD UPDATE TRACE] Error updating metafield after drop activation:`, metafieldError);
-    }
+    // Update shop metafield to set the active product    try {      console.log(`\n[METAFIELD UPDATE] ======= STARTING METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======`);      // NEW VERSION: Use stored session from global cache      if (validShopSessions[shop] && validShopSessions[shop].accessToken) {        const cachedSession = validShopSessions[shop];        console.log(`[METAFIELD UPDATE] Using cached session for ${shop}. AccessToken present: ${!!cachedSession.accessToken}. Session ID: ${cachedSession.id}`);        console.log(`[METAFIELD UPDATE] About to call updateShopMetafield with forceUpdate=true`);        await updateShopMetafield(shop, cachedSession, true); // Force update with await        console.log(`[METAFIELD UPDATE] ✅ updateShopMetafield call completed for ${shop}`);      } else {        console.log(`[METAFIELD UPDATE] No cached session available for shop ${shop}. Trying to find valid session...`);        // Try loading all offline sessions for this shop        const sessions = await shopify.config.sessionStorage.findSessionsByShop(shop);                // Find a non-expired session with an access token        let session = null;        if (sessions && sessions.length > 0) {          console.log(`[METAFIELD UPDATE] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);          for (const s of sessions) {            if (s.accessToken && !s.isOnline) {              session = s;              // Store the session for future use              validShopSessions[shop] = s;              console.log(`[METAFIELD UPDATE] Found and cached valid offline session with ID: ${session.id}`);              break;            }          }        }                if (session && session.accessToken) {          console.log(`[METAFIELD UPDATE] Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);          console.log(`[METAFIELD UPDATE] About to call updateShopMetafield with forceUpdate=true`);          await updateShopMetafield(shop, session, true); // Force update with await          console.log(`[METAFIELD UPDATE] ✅ updateShopMetafield call completed for ${shop}`);        } else {          console.error(`[METAFIELD UPDATE ERROR] FAILED to find any valid offline session for shop ${shop}.`);        }      }      console.log(`[METAFIELD UPDATE] ======= FINISHED METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======\n`);    } catch (metafieldError) {      console.error(`[METAFIELD UPDATE ERROR] Error updating metafield after drop activation:`, metafieldError);    }
     
     return data; // This should be here, before the main catch
   } catch (error) { // This is the main catch for activateDrop
