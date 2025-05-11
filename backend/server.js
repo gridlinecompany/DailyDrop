@@ -2608,40 +2608,46 @@ async function activateDrop(shop, dropId) {
     
     // Update shop metafield to set the active product
     try {
+      console.log(`[METAFIELD UPDATE TRACE] ======= STARTING METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======`);
       // NEW VERSION: Use stored session from global cache
       if (validShopSessions[shop] && validShopSessions[shop].accessToken) {
         const cachedSession = validShopSessions[shop];
-        console.log(`[Status Monitor DEBUG] Using cached session for ${shop}. AccessToken present: ${!!cachedSession.accessToken}. Session ID: ${cachedSession.id}`);
-        updateShopMetafield(shop, cachedSession, true); // Force update
+        console.log(`[METAFIELD UPDATE TRACE] Using cached session for ${shop}. AccessToken present: ${!!cachedSession.accessToken}. Session ID: ${cachedSession.id}`);
+        console.log(`[METAFIELD UPDATE TRACE] About to call updateShopMetafield with forceUpdate=true`);
+        await updateShopMetafield(shop, cachedSession, true); // Force update
+        console.log(`[METAFIELD UPDATE TRACE] updateShopMetafield call completed for ${shop}`);
       } else {
-        console.log(`[Status Monitor DEBUG] No cached session available for shop ${shop}. Trying to find valid session...`);
+        console.log(`[METAFIELD UPDATE TRACE] No cached session available for shop ${shop}. Trying to find valid session...`);
         // Try loading all offline sessions for this shop
         const sessions = await shopify.config.sessionStorage.findSessionsByShop(shop);
         
         // Find a non-expired session with an access token
         let session = null;
         if (sessions && sessions.length > 0) {
-          console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
+          console.log(`[METAFIELD UPDATE TRACE] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
           for (const s of sessions) {
             if (s.accessToken && !s.isOnline) {
               session = s;
               // Store the session for future use
               validShopSessions[shop] = s;
-              console.log(`[Status Monitor DEBUG] Found and cached valid offline session with ID: ${session.id}`);
+              console.log(`[METAFIELD UPDATE TRACE] Found and cached valid offline session with ID: ${session.id}`);
               break;
             }
           }
         }
         
         if (session && session.accessToken) {
-          console.log(`[Status Monitor DEBUG] Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
-          updateShopMetafield(shop, session, true); // Force update
+          console.log(`[METAFIELD UPDATE TRACE] Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
+          console.log(`[METAFIELD UPDATE TRACE] About to call updateShopMetafield with forceUpdate=true`);
+          await updateShopMetafield(shop, session, true); // Force update
+          console.log(`[METAFIELD UPDATE TRACE] updateShopMetafield call completed for ${shop}`);
         } else {
-          console.error(`[Status Monitor DEBUG] FAILED to find any valid offline session for shop ${shop}.`);
+          console.error(`[METAFIELD UPDATE TRACE] FAILED to find any valid offline session for shop ${shop}.`);
         }
       }
+      console.log(`[METAFIELD UPDATE TRACE] ======= FINISHED METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======`);
     } catch (metafieldError) {
-      console.error(`[Status Monitor] Error updating metafield after drop activation:`, metafieldError);
+      console.error(`[METAFIELD UPDATE TRACE] Error updating metafield after drop activation:`, metafieldError);
     }
     
     return data; // This should be here, before the main catch
@@ -3175,6 +3181,171 @@ app.get('/api/debug/metafield-test', verifyApiRequest, validateSession, async (r
     
   } catch (error) {
     console.error(`[Metafield Test] Error: ${error.message}`, error.stack);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Add a direct endpoint to force metafield update with detailed logging
+app.get('/api/debug/force-metafield-update', verifyApiRequest, validateSession, async (req, res) => {
+  try {
+    const shop = req.query.shop || req.shopifySession?.shop;
+    
+    if (!shop) {
+      return res.status(400).json({ success: false, error: 'Missing shop parameter' });
+    }
+    
+    if (!req.shopifySession) {
+      return res.status(401).json({ success: false, error: 'No valid session' });
+    }
+    
+    console.log(`[FORCE METAFIELD] Starting forced metafield update for shop ${shop}`);
+    
+    // Step 1: Get the current metafield value
+    const client = new shopify.clients.Graphql({ session: req.shopifySession });
+    const query = `
+      query GetShopMetafield { 
+        shop {
+          id
+          metafield(namespace: "custom", key: "active_drop_product_handle") {
+            id
+            value
+            createdAt
+            updatedAt
+          }
+        }
+      }
+    `;
+    
+    console.log(`[FORCE METAFIELD] Checking current metafield value`);
+    const beforeResponse = await client.query({ data: { query } });
+    const shopGid = beforeResponse?.body?.data?.shop?.id;
+    const beforeMetafield = beforeResponse?.body?.data?.shop?.metafield;
+    
+    console.log(`[FORCE METAFIELD] Current metafield: ${JSON.stringify(beforeMetafield)}`);
+    
+    // Step 2: Get current active drop
+    console.log(`[FORCE METAFIELD] Checking current active drop`);
+    const { data: activeDrop, error: dropError } = await supabase
+      .from('drops')
+      .select('product_id, id, title')
+      .eq('status', 'active')
+      .eq('shop', shop)
+      .maybeSingle();
+    
+    let handleToSet = "";
+    
+    if (activeDrop?.product_id) {
+      console.log(`[FORCE METAFIELD] Found active drop: ${JSON.stringify(activeDrop)}`);
+      const activeProductGid = activeDrop.product_id;
+      
+      // Step 3: Get product handle
+      try {
+        console.log(`[FORCE METAFIELD] Fetching handle for product ${activeProductGid}`);
+        const handleQuery = `
+          query getProductHandle($id: ID!) {
+            product(id: $id) {
+              handle
+            }
+          }
+        `;
+        const handleResponse = await client.query({ 
+          data: { 
+            query: handleQuery, 
+            variables: { id: activeProductGid } 
+          } 
+        });
+        
+        handleToSet = handleResponse?.body?.data?.product?.handle || "";
+        console.log(`[FORCE METAFIELD] Product handle: ${handleToSet}`);
+      } catch (handleError) {
+        console.error(`[FORCE METAFIELD] Error fetching handle:`, handleError);
+        
+        // Try REST fallback
+        try {
+          const productId = activeProductGid.split('/').pop();
+          const restClient = new shopify.clients.Rest({ session: req.shopifySession });
+          const productResponse = await restClient.get({
+            path: `products/${productId}`
+          });
+          
+          handleToSet = productResponse?.body?.product?.handle || "";
+          console.log(`[FORCE METAFIELD] Got handle from REST API: ${handleToSet}`);
+        } catch (restError) {
+          console.error(`[FORCE METAFIELD] REST fallback failed:`, restError);
+        }
+      }
+    } else {
+      console.log(`[FORCE METAFIELD] No active drop found, will clear metafield`);
+    }
+    
+    // Step 4: Update metafield directly
+    console.log(`[FORCE METAFIELD] Updating metafield directly to value: '${handleToSet}'`);
+    
+    const mutation = `
+      mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields {
+            id
+            key
+            namespace
+            value
+            ownerType
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+    
+    const variables = {
+      metafields: [
+        {
+          key: "active_drop_product_handle",
+          namespace: "custom",
+          ownerId: shopGid,
+          type: "single_line_text_field",
+          value: handleToSet
+        }
+      ]
+    };
+    
+    console.log(`[FORCE METAFIELD] Executing GraphQL mutation with variables: ${JSON.stringify(variables)}`);
+    const updateResponse = await client.query({ data: { query: mutation, variables } });
+    console.log(`[FORCE METAFIELD] Update response: ${JSON.stringify(updateResponse?.body)}`);
+    
+    // Step 5: Verify update
+    console.log(`[FORCE METAFIELD] Verifying metafield update`);
+    const afterResponse = await client.query({ data: { query } });
+    const afterMetafield = afterResponse?.body?.data?.shop?.metafield;
+    
+    console.log(`[FORCE METAFIELD] Updated metafield: ${JSON.stringify(afterMetafield)}`);
+    
+    // Step 6: Try using the existing function too
+    console.log(`[FORCE METAFIELD] Now trying update via updateShopMetafield function`);
+    // Clear cache first
+    delete shopMetafieldCache[shop];
+    lastActiveProductHandleSet[shop] = null;
+    
+    try {
+      await updateShopMetafield(shop, req.shopifySession, true);
+      console.log(`[FORCE METAFIELD] updateShopMetafield call completed`);
+    } catch (updateError) {
+      console.error(`[FORCE METAFIELD] Error in updateShopMetafield:`, updateError);
+    }
+    
+    // Return results
+    return res.json({
+      success: true,
+      before: beforeMetafield,
+      after: afterMetafield,
+      active_drop: activeDrop,
+      handle_to_set: handleToSet
+    });
+    
+  } catch (error) {
+    console.error(`[FORCE METAFIELD] Error:`, error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
