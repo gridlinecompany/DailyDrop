@@ -2977,3 +2977,204 @@ app.post('/api/debug/cache-session', validateSession, async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ADD: Enhanced metafield update verification endpoint 
+app.get('/api/debug/metafield-test', verifyApiRequest, validateSession, async (req, res) => {
+  try {
+    const shop = req.query.shop || req.shopifySession?.shop;
+    
+    if (!shop) {
+      return res.status(400).json({ success: false, error: 'Missing shop parameter' });
+    }
+    
+    if (!req.shopifySession) {
+      return res.status(401).json({ success: false, error: 'No valid session' });
+    }
+
+    console.log(`[Metafield Test] Starting full metafield test for shop ${shop}`);
+    console.log(`[Metafield Test] Step 1: Checking current state`);
+    
+    // Get current state from Shopify
+    const client = new shopify.clients.Graphql({ session: req.shopifySession });
+    const query = `
+      query GetShopMetafield { 
+        shop {
+          id
+          metafield(namespace: "custom", key: "active_drop_product_handle") {
+            id
+            value
+            createdAt
+            updatedAt
+          }
+        }
+      }
+    `;
+    
+    const initialResponse = await client.query({ data: { query } });
+    const shopGid = initialResponse?.body?.data?.shop?.id;
+    const initialMetafield = initialResponse?.body?.data?.shop?.metafield;
+    
+    console.log(`[Metafield Test] Current shop ID: ${shopGid}`);
+    console.log(`[Metafield Test] Current metafield: ${JSON.stringify(initialMetafield)}`);
+    
+    // Get current active drop from database
+    console.log(`[Metafield Test] Step 2: Checking active drop in database`);
+    const { data: activeDrop, error: dropError } = await supabase
+      .from('drops')
+      .select('product_id, id, title, status')
+      .eq('status', 'active')
+      .eq('shop', shop)
+      .maybeSingle();
+      
+    if (dropError) {
+      console.error(`[Metafield Test] Supabase error: ${dropError.message}`);
+      return res.status(500).json({ success: false, error: 'Database error', details: dropError });
+    }
+    
+    console.log(`[Metafield Test] Active drop: ${JSON.stringify(activeDrop)}`);
+    
+    let activeProductGid = null;
+    let activeProductHandle = null;
+    
+    if (activeDrop?.product_id) {
+      activeProductGid = activeDrop.product_id;
+      console.log(`[Metafield Test] Active product GID: ${activeProductGid}`);
+      
+      // Get product handle
+      try {
+        console.log(`[Metafield Test] Step 3: Fetching product handle`);
+        const handleQuery = `
+          query getProductHandle($id: ID!) {
+            product(id: $id) {
+              handle
+            }
+          }
+        `;
+        const handleVariables = { id: activeProductGid };
+        const handleResponse = await client.query({ 
+          data: { query: handleQuery, variables: handleVariables } 
+        });
+        
+        activeProductHandle = handleResponse?.body?.data?.product?.handle;
+        console.log(`[Metafield Test] Product handle: ${activeProductHandle}`);
+      } catch (handleError) {
+        console.error(`[Metafield Test] Error fetching handle: ${handleError.message}`);
+        
+        // Try REST fallback
+        try {
+          console.log(`[Metafield Test] Trying REST fallback for handle`);
+          const productId = activeProductGid.split('/').pop();
+          const restClient = new shopify.clients.Rest({ session: req.shopifySession });
+          const restResponse = await restClient.get({
+            path: `products/${productId}`
+          });
+          
+          activeProductHandle = restResponse?.body?.product?.handle;
+          console.log(`[Metafield Test] Handle from REST: ${activeProductHandle}`);
+        } catch (restError) {
+          console.error(`[Metafield Test] REST fallback failed: ${restError.message}`);
+        }
+      }
+    } else {
+      console.log(`[Metafield Test] No active drop found, will clear metafield`);
+    }
+    
+    // Now force metafield update
+    console.log(`[Metafield Test] Step 4: Forcing metafield update`);
+    
+    // Clear cache to ensure fresh update
+    delete shopMetafieldCache[shop];
+    lastActiveProductHandleSet[shop] = null;
+    
+    // Store valid session for background tasks
+    validShopSessions[shop] = req.shopifySession;
+    console.log(`[Metafield Test] Stored session for shop ${shop}`);
+    
+    // Call updateShopMetafield
+    console.log(`[Metafield Test] Calling updateShopMetafield with forceUpdate=true`);
+    try {
+      await updateShopMetafield(shop, req.shopifySession, true);
+      console.log(`[Metafield Test] updateShopMetafield completed`);
+    } catch (updateError) {
+      console.error(`[Metafield Test] updateShopMetafield error: ${updateError.message}`);
+    }
+    
+    // Verify the update worked
+    console.log(`[Metafield Test] Step 5: Verifying metafield was updated`);
+    const verifyResponse = await client.query({ data: { query } });
+    const verifiedMetafield = verifyResponse?.body?.data?.shop?.metafield;
+    
+    console.log(`[Metafield Test] Updated metafield: ${JSON.stringify(verifiedMetafield)}`);
+    
+    // Check if value matches expected
+    const expectedValue = activeProductHandle || "";
+    const actualValue = verifiedMetafield?.value || "";
+    const updateSuccessful = expectedValue === actualValue;
+    
+    console.log(`[Metafield Test] Expected value: "${expectedValue}"`);
+    console.log(`[Metafield Test] Actual value: "${actualValue}"`);
+    console.log(`[Metafield Test] Update successful: ${updateSuccessful}`);
+    
+    // Also make a direct update using metafieldsSet
+    if (!updateSuccessful) {
+      console.log(`[Metafield Test] Step 6: Attempting direct metafield update`);
+      
+      try {
+        const mutation = `
+          mutation SetShopMetafield($metafields: [MetafieldsSetInput!]!) {
+            metafieldsSet(metafields: $metafields) {
+              metafields {
+                id
+                key
+                namespace
+                value
+                ownerType
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+        `;
+        
+        const variables = {
+          metafields: [
+            {
+              key: "active_drop_product_handle",
+              namespace: "custom",
+              ownerId: shopGid,
+              type: "single_line_text_field",
+              value: expectedValue
+            }
+          ]
+        };
+        
+        console.log(`[Metafield Test] Direct mutation variables: ${JSON.stringify(variables)}`);
+        const directResponse = await client.query({ data: { query: mutation, variables } });
+        console.log(`[Metafield Test] Direct update response: ${JSON.stringify(directResponse?.body)}`);
+      } catch (directError) {
+        console.error(`[Metafield Test] Direct update error: ${directError.message}`);
+      }
+    }
+    
+    // Return results
+    return res.json({
+      success: true,
+      initial_state: {
+        shopGid,
+        metafield: initialMetafield
+      },
+      active_drop: activeDrop,
+      expected_handle: expectedValue,
+      final_state: {
+        metafield: verifiedMetafield
+      },
+      update_successful: updateSuccessful
+    });
+    
+  } catch (error) {
+    console.error(`[Metafield Test] Error: ${error.message}`, error.stack);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
