@@ -170,8 +170,14 @@ const validateSession = async (req, res, next) => {
         const sessions = await sessionStorage.findSessionsByShop(shop);
         if (sessions && sessions.length > 0) {
             req.shopifySession = sessions[0]; // <-- Add this line to attach session
+
+            // ADDED: Store the session for background tasks
+            if (sessions[0].accessToken) {
+                validShopSessions[shop] = sessions[0];
+                console.log(`[validateSession] Stored valid session for background tasks (shop: ${shop})`);
+            }
+
             console.log(`[validateSession] Session found for shop ${shop}. Proceeding.`);
-            // Optionally attach session to request for later use: req.shopifySession = sessions[0];
             next(); // Session exists, continue to the actual route handler
         } else {
             console.log(`[validateSession] No session found for shop ${shop}. Sending 401.`);
@@ -2517,30 +2523,37 @@ async function activateDrop(shop, dropId) {
     
     // Update shop metafield to set the active product
     try {
-      // FIXED SESSION LOADING: Using custom session loading strategy
-      console.log(`[Status Monitor DEBUG] In activateDrop: Attempting to find valid session for shop ${shop}`);
-      
-      // Try loading all offline sessions for this shop
-      const sessions = await sessionStorage.findSessionsByShop(shop);
-      
-      // Find a non-expired session with an access token
-      let session = null;
-      if (sessions && sessions.length > 0) {
-        console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
-        for (const s of sessions) {
-          if (s.accessToken && !s.isOnline) {
-            session = s;
-            console.log(`[Status Monitor DEBUG] In activateDrop: Found valid offline session with ID: ${session.id}`);
-            break;
+      // NEW VERSION: Use stored session from global cache
+      if (validShopSessions[shop] && validShopSessions[shop].accessToken) {
+        const cachedSession = validShopSessions[shop];
+        console.log(`[Status Monitor DEBUG] Using cached session for ${shop}. AccessToken present: ${!!cachedSession.accessToken}. Session ID: ${cachedSession.id}`);
+        updateShopMetafield(shop, cachedSession, true); // Force update
+      } else {
+        console.log(`[Status Monitor DEBUG] No cached session available for shop ${shop}. Trying to find valid session...`);
+        // Try loading all offline sessions for this shop
+        const sessions = await sessionStorage.findSessionsByShop(shop);
+        
+        // Find a non-expired session with an access token
+        let session = null;
+        if (sessions && sessions.length > 0) {
+          console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
+          for (const s of sessions) {
+            if (s.accessToken && !s.isOnline) {
+              session = s;
+              // Store the session for future use
+              validShopSessions[shop] = s;
+              console.log(`[Status Monitor DEBUG] Found and cached valid offline session with ID: ${session.id}`);
+              break;
+            }
           }
         }
-      }
-      
-      if (session && session.accessToken) {
-        console.log(`[Status Monitor DEBUG] In activateDrop: Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
-        updateShopMetafield(shop, session, true); // Force update
-      } else {
-        console.error(`[Status Monitor DEBUG] In activateDrop: FAILED to find any valid offline session for shop ${shop}. Available sessions: ${JSON.stringify(sessions)}`);
+        
+        if (session && session.accessToken) {
+          console.log(`[Status Monitor DEBUG] Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
+          updateShopMetafield(shop, session, true); // Force update
+        } else {
+          console.error(`[Status Monitor DEBUG] FAILED to find any valid offline session for shop ${shop}.`);
+        }
       }
     } catch (metafieldError) {
       console.error(`[Status Monitor] Error updating metafield after drop activation:`, metafieldError);
@@ -2606,30 +2619,37 @@ async function completeActiveDrop(shop, dropId) {
     
     // Update shop metafield to clear the active product
     try {
-      // FIXED SESSION LOADING: Using custom session loading strategy
-      console.log(`[Status Monitor DEBUG] In completeActiveDrop: Attempting to find valid session for shop ${shop}`);
-      
-      // Try loading all offline sessions for this shop
-      const sessions = await sessionStorage.findSessionsByShop(shop);
-      
-      // Find a non-expired session with an access token
-      let session = null;
-      if (sessions && sessions.length > 0) {
-        console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
-        for (const s of sessions) {
-          if (s.accessToken && !s.isOnline) {
-            session = s;
-            console.log(`[Status Monitor DEBUG] In completeActiveDrop: Found valid offline session with ID: ${session.id}`);
-            break;
+      // NEW VERSION: Use stored session from global cache
+      if (validShopSessions[shop] && validShopSessions[shop].accessToken) {
+        const cachedSession = validShopSessions[shop];
+        console.log(`[Status Monitor DEBUG] Using cached session for ${shop}. AccessToken present: ${!!cachedSession.accessToken}. Session ID: ${cachedSession.id}`);
+        updateShopMetafield(shop, cachedSession, true); // Force update
+      } else {
+        console.log(`[Status Monitor DEBUG] No cached session available for shop ${shop}. Trying to find valid session...`);
+        // Try loading all offline sessions for this shop
+        const sessions = await sessionStorage.findSessionsByShop(shop);
+        
+        // Find a non-expired session with an access token
+        let session = null;
+        if (sessions && sessions.length > 0) {
+          console.log(`[Status Monitor DEBUG] Found ${sessions.length} sessions for shop ${shop}. Looking for a valid one...`);
+          for (const s of sessions) {
+            if (s.accessToken && !s.isOnline) {
+              session = s;
+              // Store the session for future use
+              validShopSessions[shop] = s;
+              console.log(`[Status Monitor DEBUG] Found and cached valid offline session with ID: ${session.id}`);
+              break;
+            }
           }
         }
-      }
-      
-      if (session && session.accessToken) {
-        console.log(`[Status Monitor DEBUG] In completeActiveDrop: Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
-        updateShopMetafield(shop, session, true); // Force update
-      } else {
-        console.error(`[Status Monitor DEBUG] In completeActiveDrop: FAILED to find any valid offline session for shop ${shop}. Available sessions: ${JSON.stringify(sessions)}`);
+        
+        if (session && session.accessToken) {
+          console.log(`[Status Monitor DEBUG] Session loaded for ${shop}. AccessToken present: ${!!session.accessToken}. Triggering metafield update.`);
+          updateShopMetafield(shop, session, true); // Force update
+        } else {
+          console.error(`[Status Monitor DEBUG] FAILED to find any valid offline session for shop ${shop}.`);
+        }
       }
     } catch (metafieldError) {
       console.error(`[Status Monitor] Error updating metafield after drop completion:`, metafieldError);
@@ -2848,5 +2868,27 @@ app.post('/api/debug/metafield/update', verifyApiRequest, validateSession, async
   } catch (error) {
     console.error(`[Debug Metafield Update] Error:`, error);
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Store valid sessions by shop for background tasks
+const validShopSessions = {}; // Structure: { shop: sessionObject }
+
+// Add endpoint to cache valid sessions for background tasks
+app.post('/api/debug/cache-session', validateSession, async (req, res) => {
+  try {
+    const shop = req.shopifySession?.shop;
+    if (!shop || !req.shopifySession?.accessToken) {
+      return res.status(400).json({ success: false, message: 'Invalid session' });
+    }
+
+    // Store the session for background tasks
+    validShopSessions[shop] = req.shopifySession;
+    console.log(`[Session Cache] Stored valid session for shop ${shop}. Token exists: ${!!req.shopifySession.accessToken}`);
+
+    res.json({ success: true, message: 'Session cached for background tasks' });
+  } catch (error) {
+    console.error('[Session Cache] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
