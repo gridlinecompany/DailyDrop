@@ -2399,16 +2399,34 @@ async function checkAndActivateScheduledDrops(shop) {
     console.log(`[checkAndActivateScheduledDrops DEBUG] Using current time for query: ${now.toISOString()}`);
     
     // Find scheduled drops that should be active based on start_time
+    const nowString = now.toISOString();
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Checking for drops with start_time < ${nowString}`);
+    
     const { data: dropsToActivate, error } = await supabase
       .from('drops')
       .select('*')
       .eq('shop', shop)
       .eq('status', 'queued')
-      .lt('start_time', now.toISOString()) // Only activate if start_time has passed
+      .lt('start_time', nowString) // Only activate if start_time has passed
       .order('start_time', { ascending: true });
     
     // Log the raw result of the query
     console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2));
+    
+    // Additional debug - check all queued drops regardless of start_time to see what's waiting
+    const { data: allQueuedDrops } = await supabase
+      .from('drops')
+      .select('id, product_id, title, status, start_time, end_time')
+      .eq('shop', shop)
+      .eq('status', 'queued');
+      
+    console.log(`[checkAndActivateScheduledDrops DEBUG] All queued drops in system:`, 
+      allQueuedDrops ? JSON.stringify(allQueuedDrops.map(d => ({
+        id: d.id,
+        title: d.title,
+        start_time: d.start_time,
+        time_diff_mins: Math.round((new Date(d.start_time) - now) / (60 * 1000))
+      })), null, 2) : 'none');
     
     if (error) {
       console.error(`[Status Monitor] Error checking for drops to activate:`, error);
