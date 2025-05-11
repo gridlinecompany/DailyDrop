@@ -2384,9 +2384,10 @@ function stopStatusMonitoring(shop) {
 
 // Check for drops that should be activated
 async function checkAndActivateScheduledDrops(shop) {
-  console.log(`!!!!!!!!!! CHECKING TO ACTIVATE SCHEDULED DROPS FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`); // <-- ADD THIS LOG
+  console.log(`!!!!!!!!!! CHECKING TO ACTIVATE SCHEDULED DROPS FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`); 
   try {
     const now = new Date();
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`); // <-- ADD THIS LOG
     
     // Find scheduled drops that should be active based on start_time
     const { data: dropsToActivate, error } = await supabase
@@ -2397,7 +2398,13 @@ async function checkAndActivateScheduledDrops(shop) {
       .lt('start_time', now.toISOString())
       .order('start_time', { ascending: true });
     
-    if (error) throw error;
+    // Log the raw result of the query
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2)); // <-- ADD THIS LOG
+    
+    if (error) {
+        console.error(`[checkAndActivateScheduledDrops DEBUG] Supabase error directly from query:`, error);
+        throw error; 
+    }
     
     if (dropsToActivate && dropsToActivate.length > 0) {
       console.log(`[Status Monitor] Found ${dropsToActivate.length} drops to activate for shop ${shop}`);
