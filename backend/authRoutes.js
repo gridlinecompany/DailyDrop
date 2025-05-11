@@ -25,8 +25,8 @@ const validateOAuthState = (req, res, next) => {
     console.log(`[/auth/callback] Clearing cookie: ${OAUTH_STATE_COOKIE_NAME}`);
     res.clearCookie(OAUTH_STATE_COOKIE_NAME, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax'
+        secure: true,
+        sameSite: 'None'
     });
 
     if (!queryState || !stateCookie || queryState !== stateCookie) {
@@ -71,8 +71,8 @@ router.get('/', async (req, res) => {
         res.cookie(OAUTH_STATE_COOKIE_NAME, state, {
             maxAge: 600000,
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax'
+            secure: true,
+            sameSite: 'None'
         });
 
         const authUrl = `https://${encodeURIComponent(shop)}/admin/oauth/authorize?client_id=${apiKey}&scope=${encodedScopes}&redirect_uri=${encodedRedirectUri}&state=${state}`;
@@ -101,8 +101,8 @@ router.get(
     
     res.clearCookie(OAUTH_STATE_COOKIE_NAME, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax'
+        secure: true,
+        sameSite: 'None'
     });
 
     if (!shop || !code) {
