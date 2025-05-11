@@ -2395,9 +2395,8 @@ async function checkAndActivateScheduledDrops(shop) {
     const now = new Date();
     console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`);
     
-    // Add a buffer to the current time to be more generous with activation
-    const timeBuffer = new Date(now.getTime() + 5 * 60000); // Current time plus 5 minutes
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Using buffered time for query: ${timeBuffer.toISOString()}`);
+    // Use current time without buffer to only activate drops whose time has already passed
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Using current time for query: ${now.toISOString()}`);
     
     // Find scheduled drops that should be active based on start_time
     const { data: dropsToActivate, error } = await supabase
@@ -2405,7 +2404,7 @@ async function checkAndActivateScheduledDrops(shop) {
       .select('*')
       .eq('shop', shop)
       .eq('status', 'queued')
-      .lt('start_time', timeBuffer.toISOString()) // Using a more generous time window
+      .lt('start_time', now.toISOString()) // Only activate if start_time has passed
       .order('start_time', { ascending: true });
     
     // Log the raw result of the query
