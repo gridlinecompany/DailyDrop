@@ -1866,7 +1866,7 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
         try {
             const { data: activeDrop, error: dbError } = await supabase
                 .from('drops')
-                .select('product_id')
+                .select('product_id, id, title')
                 .eq('status', 'active')
                 .eq('shop', shop)
                 .maybeSingle(); 
@@ -1879,7 +1879,7 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
 
             if (activeDrop && activeDrop.product_id) { 
                 activeProductGid = activeDrop.product_id;
-                console.log(`[Metafield Updater DEBUG] Found active drop GID for ${shop}: ${activeProductGid}`);
+                console.log(`[Metafield Updater DEBUG] Found active drop GID for ${shop}: ${activeProductGid}, Drop ID: ${activeDrop.id}, Title: ${activeDrop.title}`);
             } else {
                 console.log(`[Metafield Updater DEBUG] No active drop found in Supabase for ${shop}.`);
                 activeProductGid = null; 
@@ -1913,9 +1913,37 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
                     console.log(`[Metafield Updater DEBUG] Successfully fetched handle: ${activeProductHandleValue}`);
                 } else {
                     console.error(`[Metafield Updater DEBUG] Failed to fetch handle for GID ${activeProductGid}.`);
+                    // If we can't get the handle, try to extract it from the GID as a fallback
+                    try {
+                        const productId = activeProductGid.split('/').pop();
+                        const restClient = new shopify.clients.Rest({ session });
+                        const productResponse = await restClient.get({
+                            path: `products/${productId}`
+                        });
+                        if (productResponse?.body?.product?.handle) {
+                            activeProductHandleValue = productResponse.body.product.handle;
+                            console.log(`[Metafield Updater DEBUG] Got handle from REST API as fallback: ${activeProductHandleValue}`);
+                        }
+                    } catch (restError) {
+                        console.error(`[Metafield Updater DEBUG] Failed REST fallback attempt:`, restError);
+                    }
                 }
             } catch (handleError) {
                  console.error(`[Metafield Updater DEBUG] Exception fetching handle for GID ${activeProductGid}:`, handleError.message, handleError.stack);
+                 // Try one more time with REST API as fallback
+                 try {
+                     const productId = activeProductGid.split('/').pop();
+                     const restClient = new shopify.clients.Rest({ session });
+                     const productResponse = await restClient.get({
+                         path: `products/${productId}`
+                     });
+                     if (productResponse?.body?.product?.handle) {
+                         activeProductHandleValue = productResponse.body.product.handle;
+                         console.log(`[Metafield Updater DEBUG] Got handle from REST API after GraphQL failure: ${activeProductHandleValue}`);
+                     }
+                 } catch (restError) {
+                     console.error(`[Metafield Updater DEBUG] Failed REST fallback attempt:`, restError);
+                 }
             }
         } else {
             console.log("[Metafield Updater DEBUG] No active product GID, so no handle to fetch.");
@@ -1924,6 +1952,7 @@ async function updateShopMetafield(shop, session, forceUpdate = false) { // <-- 
         console.log(`[Metafield Updater DEBUG] Final activeProductHandleValue: '${activeProductHandleValue}'`);
         console.log(`[Metafield Updater DEBUG] Comparing for ${shop}: Current Handle='${activeProductHandleValue}', Last Set Handle='${currentLastSetHandle}', ForceUpdate=${forceUpdate}`);
         
+        // Always proceed with metafield update when forced or if values differ
         if (forceUpdate || activeProductHandleValue !== currentLastSetHandle) {
             console.log("[Metafield Updater DEBUG] Condition met: Proceeding with metafield update.");
             try {
