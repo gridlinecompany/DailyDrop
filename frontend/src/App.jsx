@@ -312,7 +312,7 @@ function App() {
     };
     console.log('[App.jsx Base] Token being sent:', currentToken);
     console.log('[App.jsx Base] Headers being sent:', verificationHeaders);
-    fetch(`${backendBaseUrl}/api/verify-session?shop=${encodeURIComponent(shop)}`, {
+    fetch(`${backendBaseUrl}/api/shopify/verify-session?shop=${encodeURIComponent(shop)}`, {
       headers: verificationHeaders,
     })
       .then(response => {
