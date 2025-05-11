@@ -2395,13 +2395,11 @@ async function checkAndActivateScheduledDrops(shop) {
     const now = new Date();
     console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`);
     
-    // Use current time without buffer to only activate drops whose time has already passed
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Using current time for query: ${now.toISOString()}`);
+    // No buffer - only activate drops that have passed their scheduled time
+    const nowString = now.toISOString();
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Using exact current time for query: ${nowString}`);
     
     // Find scheduled drops that should be active based on start_time
-    const nowString = now.toISOString();
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Checking for drops with start_time < ${nowString}`);
-    
     const { data: dropsToActivate, error } = await supabase
       .from('drops')
       .select('*')
@@ -2493,10 +2491,30 @@ async function activateDrop(shop, dropId) {
   try {
     console.log(`[Status Monitor] Attempting to activate drop ${dropId} for shop ${shop}`);
 
-    // Update drop status to active
+    // First, get the drop data to calculate its end time
+    const { data: dropData, error: fetchError } = await supabase
+      .from('drops')
+      .select('*')
+      .eq('id', dropId)
+      .eq('shop', shop)
+      .single();
+      
+    if (fetchError) throw fetchError;
+    
+    // Calculate end_time explicitly based on current time and duration
+    const now = new Date();
+    const durationMs = dropData.duration_minutes * 60 * 1000;
+    const endTime = new Date(now.getTime() + durationMs);
+    console.log(`[Status Monitor] Calculated end time for drop ${dropId}: ${endTime.toISOString()} (duration: ${dropData.duration_minutes} mins)`);
+
+    // Update drop status to active and set the end_time explicitly
     const { data, error } = await supabase
       .from('drops')
-      .update({ status: 'active' })
+      .update({ 
+        status: 'active',
+        start_time: now.toISOString(), // Update start time to now
+        end_time: endTime.toISOString()  // Set explicit end time
+      })
       .eq('id', dropId)
       .eq('shop', shop)
       .select()
