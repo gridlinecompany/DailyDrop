@@ -2387,19 +2387,20 @@ async function checkAndActivateScheduledDrops(shop) {
   console.log(`!!!!!!!!!! CHECKING TO ACTIVATE SCHEDULED DROPS FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`); 
   try {
     const now = new Date();
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`); // <-- ADD THIS LOG
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`);
     
-    // Find scheduled drops that should be active based on start_time
+    // MODIFIED QUERY: Temporarily remove the start_time < now condition
+    console.log(`[checkAndActivateScheduledDrops DEBUG] RUNNING MODIFIED QUERY (ignoring start_time)`); // <-- ADD THIS LOG
     const { data: dropsToActivate, error } = await supabase
       .from('drops')
       .select('*')
       .eq('shop', shop)
       .eq('status', 'queued')
-      .lt('start_time', now.toISOString())
+      // .lt('start_time', now.toISOString()) // <-- TEMPORARILY COMMENTED OUT
       .order('start_time', { ascending: true });
     
     // Log the raw result of the query
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2)); // <-- ADD THIS LOG
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query (MODIFIED) for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2)); // Log MODIFIED query result
     
     if (error) {
         console.error(`[checkAndActivateScheduledDrops DEBUG] Supabase error directly from query:`, error);
