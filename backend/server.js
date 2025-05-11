@@ -2424,43 +2424,45 @@ async function checkAndActivateScheduledDrops(shop) {
     const now = new Date();
     console.log(`[checkAndActivateScheduledDrops DEBUG] Current time for check: ${now.toISOString()}`);
     
-    // No buffer - only activate drops that have passed their scheduled time
-    const nowString = now.toISOString();
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Using exact current time for query: ${nowString}`);
+    // Convert to timestamps for more reliable comparison
+    const nowTimestamp = now.getTime();
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Current timestamp: ${nowTimestamp}`);
     
-    // Find scheduled drops that should be active based on start_time
-    const { data: dropsToActivate, error } = await supabase
+    // Find all queued drops for this shop
+    const { data: allQueuedDrops, error: queryError } = await supabase
       .from('drops')
       .select('*')
       .eq('shop', shop)
       .eq('status', 'queued')
-      .lt('start_time', nowString) // Only activate if start_time has passed
       .order('start_time', { ascending: true });
     
-    // Log the raw result of the query
-    console.log(`[checkAndActivateScheduledDrops DEBUG] Supabase query for dropsToActivate result:`, JSON.stringify({ data: dropsToActivate, error }, null, 2));
+    if (queryError) {
+      console.error(`[Status Monitor] Error querying drops:`, queryError);
+      return;
+    }
     
-    // Additional debug - check all queued drops regardless of start_time to see what's waiting
-    const { data: allQueuedDrops } = await supabase
-      .from('drops')
-      .select('id, product_id, title, status, start_time, end_time')
-      .eq('shop', shop)
-      .eq('status', 'queued');
-      
+    // Filter drops to activate based on time comparison with timestamps
+    const dropsToActivate = allQueuedDrops.filter(drop => {
+      const dropStartTime = new Date(drop.start_time).getTime();
+      const shouldActivate = dropStartTime <= nowTimestamp;
+      console.log(`[checkAndActivateScheduledDrops DEBUG] Drop ${drop.id} (${drop.title}): start_time=${drop.start_time}, timestamp=${dropStartTime}, should activate? ${shouldActivate}`);
+      return shouldActivate;
+    });
+    
+    // Log the result of the filtering
+    console.log(`[checkAndActivateScheduledDrops DEBUG] Found ${dropsToActivate.length} drops to activate out of ${allQueuedDrops.length} queued drops`);
+    
+    // Additional debug - log all queued drops with time difference
     console.log(`[checkAndActivateScheduledDrops DEBUG] All queued drops in system:`, 
       allQueuedDrops ? JSON.stringify(allQueuedDrops.map(d => ({
         id: d.id,
         title: d.title,
         start_time: d.start_time,
-        time_diff_mins: Math.round((new Date(d.start_time) - now) / (60 * 1000))
+        time_diff_mins: Math.round((new Date(d.start_time).getTime() - nowTimestamp) / (60 * 1000)),
+        should_activate: new Date(d.start_time).getTime() <= nowTimestamp
       })), null, 2) : 'none');
     
-    if (error) {
-      console.error(`[Status Monitor] Error checking for drops to activate:`, error);
-      return;
-    }
-    
-    if (dropsToActivate && dropsToActivate.length > 0) {
+    if (dropsToActivate.length > 0) {
       console.log(`[Status Monitor] Found ${dropsToActivate.length} drops to activate for shop ${shop}`);
       
       // Get current active drop if any
@@ -2490,18 +2492,37 @@ async function checkAndActivateScheduledDrops(shop) {
 async function checkAndCompleteActiveDrops(shop) {
   try {
     const now = new Date();
+    const nowTimestamp = now.getTime();
+    console.log(`[checkAndCompleteActiveDrops DEBUG] Checking for drops to complete at: ${now.toISOString()}, timestamp: ${nowTimestamp}`);
     
-    // Find active drops that should be completed based on end_time
-    const { data: dropsToComplete, error } = await supabase
+    // Find all active drops for this shop
+    const { data: activeDrops, error: queryError } = await supabase
       .from('drops')
       .select('*')
       .eq('shop', shop)
-      .eq('status', 'active')
-      .lt('end_time', now.toISOString());
+      .eq('status', 'active');
     
-    if (error) throw error;
+    if (queryError) {
+      console.error(`[Status Monitor] Error querying active drops:`, queryError);
+      return;
+    }
     
-    if (dropsToComplete && dropsToComplete.length > 0) {
+    if (!activeDrops || activeDrops.length === 0) {
+      // No active drops to check
+      return;
+    }
+    
+    // Filter drops to complete based on time comparison with timestamps
+    const dropsToComplete = activeDrops.filter(drop => {
+      const dropEndTime = new Date(drop.end_time).getTime();
+      const shouldComplete = dropEndTime <= nowTimestamp;
+      console.log(`[checkAndCompleteActiveDrops DEBUG] Active drop ${drop.id} (${drop.title}): end_time=${drop.end_time}, timestamp=${dropEndTime}, should complete? ${shouldComplete}`);
+      return shouldComplete;
+    });
+    
+    console.log(`[checkAndCompleteActiveDrops DEBUG] Found ${dropsToComplete.length} drops to complete out of ${activeDrops.length} active drops`);
+    
+    if (dropsToComplete.length > 0) {
       console.log(`[Status Monitor] Found ${dropsToComplete.length} active drops to complete for shop ${shop}`);
       
       // Complete each drop
