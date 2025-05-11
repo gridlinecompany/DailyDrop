@@ -2600,6 +2600,7 @@ async function activateDrop(shop, dropId) {
     
     // Update shop metafield to set the active product
     try {
+      console.log(`[ACTIVATE_DROP_METAFIELD_LOG] Attempting metafield update for ${shop}, Drop ID: ${dropId}.`); // <-- NEW LOG LINE
       console.log(`\n[METAFIELD UPDATE] ======= STARTING METAFIELD UPDATE FOR ${shop} AFTER ACTIVATING DROP ${dropId} =======`);
       // NEW VERSION: Use stored session from global cache
       if (validShopSessions[shop] && validShopSessions[shop].accessToken) {
