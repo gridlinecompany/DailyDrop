@@ -2384,6 +2384,7 @@ function stopStatusMonitoring(shop) {
 
 // Check for drops that should be activated
 async function checkAndActivateScheduledDrops(shop) {
+  console.log(`!!!!!!!!!! CHECKING TO ACTIVATE SCHEDULED DROPS FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`); // <-- ADD THIS LOG
   try {
     const now = new Date();
     
@@ -2454,6 +2455,7 @@ async function checkAndCompleteActiveDrops(shop) {
 
 // Activate a drop by ID
 async function activateDrop(shop, dropId) {
+  console.log(`!!!!!!!!!! ATTEMPTING TO ACTIVATE DROP ${dropId} FOR ${shop} AT ${new Date().toISOString()} !!!!!!!!!!`); // <-- ADD THIS LOG
   try {
     console.log(`[Status Monitor] Attempting to activate drop ${dropId} for shop ${shop}`);
     
